@@ -8,8 +8,8 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 - **Resilient Azure Integration**: Implemented automatic retries and exponential backoff for Azure Storage Queue operations to handle network disconnects and transient errors.
 - **Heartbeat Monitoring**: Added worker health tracking with periodic heartbeat logging to ensure continuous processing.
 - **Graceful Shutdown**: Implemented signal handling (SIGINT/SIGTERM) for clean worker termination without interrupting in-flight tasks.
-- **SLA & CSM Monitoring**: Implemented a robust auditing engine for real-time SLA tracking, CSM attribution, and automated detection of stale interactions across different program tiers.
-- **SLA & CSM Monitoring**: Integrated program-tier metadata, CSM attribution, and automated SLA tracking to monitor and flag at-risk students in real-time.
+- **Fault Tolerance**: Added top-level crash logging, non-zero exit codes, and a failure threshold with automated alert dispatching for the provisioning worker.
+- **SLA & CSM Monitoring**: Implemented an auditing engine for real-time SLA tracking, CSM attribution, and contextual alert routing to separate infrastructure failures from business process breaches.
 
 ## Tech Stack
 
