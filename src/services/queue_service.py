@@ -48,6 +48,17 @@ class QueueService:
                 # Yield to the event loop while waiting for a transient Azure outage to clear.
                 await asyncio.sleep(2 ** (attempt + 1))
 
+    async def dead_letter_message(self, message_body: str) -> None:
+        dead_letter_client = QueueClient.from_connection_string(
+            conn_str=settings.AZURE_STORAGE_CONNECTION_STRING,
+            queue_name="student-provisioning-deadletter",
+        )
+        try:
+            await dead_letter_client.create_queue()
+            await dead_letter_client.send_message(message_body)
+        finally:
+            await dead_letter_client.close()
+
     # Close the async client so sockets and other transport resources are released on shutdown.
     async def close(self) -> None:
         await self.queue_client.close()

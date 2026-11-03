@@ -26,6 +26,7 @@ from src.models.student import Student
 from src.services.clickup_client import ClickUpClient
 from src.domain.lifecycle import InvalidStudentTransition, StudentDomainEvent, StudentStatus, transition_status
 from src.models.student_transition import StudentTransition
+from src.services.queue_service import QueueService
 
 
 # Configure timestamped logs suitable for container stdout collection.
@@ -45,6 +46,13 @@ async def process_message(message, queue_client: QueueClient) -> None:
         # Delete invalid poison messages because retrying malformed input cannot succeed.
         logger.error("Dropping malformed provisioning message")
         await queue_client.delete_message(message)
+        return
+
+    max_dequeue_attempts = 5
+    if getattr(message, "dequeue_count", 1) > max_dequeue_attempts:
+        await QueueService().dead_letter_message(message.content)
+        await queue_client.delete_message(message)
+        logger.error("Dead-lettered student provisioning message after %s attempts", message.dequeue_count)
         return
 
     # Start a monotonic timer to measure end-to-end provisioning latency.

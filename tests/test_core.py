@@ -15,6 +15,7 @@ from src.api.webhooks import _verify_signature
 from src.models.student import Student
 from src.services.student_auditor import StudentAuditor
 from src.domain.lifecycle import InvalidStudentTransition, StudentDomainEvent, StudentStatus, transition_status
+from src.models.messaging import InboxEvent, OutboxEvent
 from fastapi import HTTPException
 
 
@@ -38,6 +39,12 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertIn("ix_students_status_updated_at", index_names)
         self.assertIn("ix_students_program_cohort_status", index_names)
         self.assertIn("ux_students_clickup_task_id", index_names)
+
+    def test_messaging_models_define_durable_delivery_fields(self):
+        self.assertIn("provider_event_id", InboxEvent.__table__.columns)
+        self.assertIn("payload", OutboxEvent.__table__.columns)
+        self.assertIn("available_at", OutboxEvent.__table__.columns)
+        self.assertIn("attempts", OutboxEvent.__table__.columns)
 
     def test_auditor_flags_status_sla_breach(self):
         student = Student(

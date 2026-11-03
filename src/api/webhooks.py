@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import logging
+from uuid import uuid4
 from typing import Optional
 
 # Import FastAPI request primitives and Pydantic validation models for the HTTP boundary.
@@ -18,6 +19,8 @@ from src.models.student import Student
 from src.services.queue_service import QueueService
 from src.domain.lifecycle import InvalidStudentTransition, StudentDomainEvent, StudentStatus, transition_status
 from src.models.student_transition import StudentTransition
+from src.models.messaging import InboxEvent, OutboxEvent
+from src.services.outbox_service import OutboxService
 
 # Configure a useful default log level for local runs and container diagnostics.
 logging.basicConfig(level=logging.INFO)
@@ -28,6 +31,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="PulseOps-Engine API")
 # Construct the queue facade once so handlers reuse its client configuration.
 queue_service = QueueService()
+outbox_service = OutboxService(queue_service)
 
 CLICKUP_STATUS_MAP = {
     "to do": StudentStatus.ONBOARDING_STARTED,
@@ -102,6 +106,7 @@ async def ghl_deal_won(request: Request):
     _verify_signature(raw_body, request.headers.get("X-Webhook-Signature"), settings.GHL_WEBHOOK_SECRET)
     # Validate and deserialize the authenticated JSON using the strict Pydantic schema.
     payload = GHLWebhook.model_validate_json(raw_body)
+    provider_event_id = request.headers.get("X-Webhook-Event-Id") or str(uuid4())
 
     # Scope the database session to this webhook and guarantee cleanup afterward.
     async with SessionLocal() as session:
@@ -114,6 +119,14 @@ async def ghl_deal_won(request: Request):
             )
             # Extract the one matching student or None when this is a first-time contact.
             student = result.scalar_one_or_none()
+            duplicate_event = await session.scalar(
+                select(InboxEvent).where(
+                    InboxEvent.provider == "ghl",
+                    InboxEvent.provider_event_id == provider_event_id,
+                )
+            )
+            if duplicate_event:
+                return {"status": "duplicate", "event_id": provider_event_id}
             if student is None:
                 # Create the initial queued record before publishing asynchronous work.
                 student = Student(
@@ -154,6 +167,18 @@ async def ghl_deal_won(request: Request):
                 student.status = target_status.value
 
             # Commit the source-of-truth state before enqueueing work.
+            session.add(InboxEvent(
+                provider="ghl",
+                provider_event_id=provider_event_id,
+                payload=payload.model_dump(),
+                processed_at=None,
+            ))
+            session.add(OutboxEvent(
+                id=str(uuid4()),
+                event_type="student.provisioning.requested",
+                aggregate_id=student.id,
+                payload={"id": student.id},
+            ))
             await session.commit()
             # Capture the identifier after commit for the queue payload and response.
             student_id = student.id
@@ -163,25 +188,11 @@ async def ghl_deal_won(request: Request):
             logger.exception("Failed to persist GHL webhook")
             raise HTTPException(status_code=500, detail="Internal Server Error")
 
-    try:
-        # Publish only the stable identifier; the worker reloads current state from PostgreSQL.
-        await queue_service.push_message(json.dumps({"id": student_id}))
-    except Exception:
-        # Reopen a short transaction to expose that durable queue delivery did not occur.
-        async with SessionLocal() as session:
-            result = await session.execute(select(Student).where(Student.id == student_id).with_for_update())
-            # Find and lock the record before transitioning it back to a retryable state.
-            queued_student = result.scalar_one_or_none()
-            if queued_student and not queued_student.clickup_task_id:
-                # Mark the record pending so recovery tooling can safely requeue it.
-                queued_student.status = StudentStatus.PENDING.value
-                await session.commit()
-        # Preserve the original infrastructure error in logs while returning a stable API response.
-        logger.exception("Failed to enqueue student provisioning")
-        raise HTTPException(status_code=503, detail="Provisioning queue unavailable")
+    async with SessionLocal() as session:
+        await outbox_service.publish_pending(session)
 
     # Confirm acceptance only after both database persistence and queue publication succeeded.
-    return {"status": "accepted", "student_id": student_id}
+    return {"status": "accepted", "student_id": student_id, "event_id": provider_event_id}
 
 
 @app.post("/webhooks/clickup/task-updated")

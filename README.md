@@ -15,6 +15,7 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 - **Continuous Integration**: GitHub Actions compiles the Python sources and runs the unit test suite on pushes to `main` and pull requests.
 - **Explicit Lifecycle Contracts**: Student status transitions are validated through a typed state machine, recorded in `student_transitions`, and represented by stable domain-event envelopes.
 - **Scale-Oriented Student Schema**: Cohort is persisted for segmentation, dashboard query indexes cover status/CSM/program workloads, and database checks protect health scores, follow-up counts, lifecycle statuses, and duplicate ClickUp task IDs.
+- **Durable Messaging**: Inbox deduplication prevents repeated provider events, PostgreSQL outbox records close the database-to-queue delivery gap, retry backoff preserves failed publications, and exhausted queue messages are sent to `student-provisioning-deadletter`.
 
 ## Tech Stack
 
@@ -34,7 +35,9 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 - `src/domain/`: Typed lifecycle states, transition rules, and domain-event contracts.
 - `src/models/`: Database models (e.g., Student).
 - `src/models/student_transition.py`: Durable audit history for student lifecycle changes.
+- `src/models/messaging.py`: Inbox and outbox persistence models for reliable event delivery.
 - `src/services/`: External API clients (ClickUp, Queue Service) and business logic.
+- `src/services/outbox_service.py`: Retryable publisher for pending PostgreSQL outbox events.
 - `src/tasks/`: Logic for data processing and orchestration.
 - `src/workers/`: Canonical background worker execution loop with queue retries and graceful shutdown.
 - `migrations/`: Alembic migration scripts.
@@ -113,6 +116,9 @@ python -m unittest discover -s tests -v
 
 - **Lifecycle migration**: Apply revision `0003` with `alembic upgrade head` to create the `student_transitions` audit table.
 - **Schema hardening migration**: Revision `0004` adds cohort data, operational indexes, and database constraints for the student record.
+- **Messaging migration**: Revision `0005` adds inbox deduplication and retryable outbox records.
+- **Outbox operation**: Webhooks commit the student update and outbox command together; the publisher then retries pending commands with exponential backoff until Azure Queue accepts them.
+- **Dead-letter operation**: Messages that exceed the worker dequeue-attempt limit are copied to `student-provisioning-deadletter` for inspection and replay instead of being silently discarded.
 - **Lifecycle behavior**: Invalid status changes are rejected, while supported ClickUp statuses are normalized into internal lifecycle states before persistence.
 - **Webhooks**: Use the `scripts/simulate_*.py` scripts to test incoming webhook payloads.
 - **Seeding**: Use `scripts/seed_clickup_students.py` to populate the database with initial data.
@@ -121,3 +127,12 @@ python -m unittest discover -s tests -v
 - **SLA Auditor**: Run the periodic operational audit script to check ClickUp sync and SLA breaches using `scripts/run_sla_auditor.py`.
 - **Recovery**: Re-enqueue unprovisioned or failed student records using `scripts/requeue_pending_students.py`.
 - **Reconciliation**: Reconcile stale database records with ClickUp tasks using `scripts/reconcile_students.py`.
+
+### Reliable event flow
+
+1. A signed provider webhook is validated and assigned an event ID.
+2. The inbox table rejects a previously processed provider event.
+3. The student state change and an outbox command are committed in one PostgreSQL transaction.
+4. The outbox publisher sends the command to Azure Storage Queue and records publication or retry metadata.
+5. The worker claims the student, performs provisioning, and acknowledges the queue message.
+6. Repeatedly failing messages are moved to the dead-letter queue for operator review.
