@@ -14,7 +14,15 @@ logger = logging.getLogger(__name__)
 # Represent all ClickUp failures under one application-specific exception family.
 class ClickUpAPIError(Exception):
     """Base exception for ClickUp API errors."""
-    pass
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        # Retain the provider status so reconciliation can distinguish absence from access or service failures.
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class ClickUpNotFoundError(ClickUpAPIError):
+    """Raised when ClickUp confirms that a requested resource does not exist."""
 
 # Represent provider throttling separately so callers can distinguish backpressure from bad input.
 class ClickUpRateLimitError(ClickUpAPIError):
@@ -79,7 +87,10 @@ class ClickUpClient:
                             method, endpoint, json_data, student_id, ghl_contact_id, attempt + 1
                         )
                     # Stop after the retry budget so one throttled request cannot loop forever.
-                    raise ClickUpRateLimitError(f"Rate limit exceeded after {attempt} attempts.")
+                    raise ClickUpRateLimitError(
+                        f"Rate limit exceeded after {attempt} attempts.",
+                        status_code=429,
+                    )
 
                 # Convert non-success HTTP statuses into an explicit exception.
                 response.raise_for_status()
@@ -113,7 +124,16 @@ class ClickUpClient:
             except httpx.HTTPStatusError as e:
                 # Preserve provider status and body in logs while normalizing the exception type.
                 logger.error(f"HTTP Error for student_id={student_id}: {e.response.status_code} - {e.response.text}")
-                raise ClickUpAPIError(f"HTTP error occurred: {e}")
+                # Only a provider 404 is reliable evidence that a referenced task is absent.
+                if e.response.status_code == 404:
+                    raise ClickUpNotFoundError(
+                        f"ClickUp resource not found: {endpoint}",
+                        status_code=404,
+                    ) from e
+                raise ClickUpAPIError(
+                    f"HTTP error occurred: {e}",
+                    status_code=e.response.status_code,
+                ) from e
 
     # Create the per-student ClickUp list used as the external onboarding workspace.
     async def create_student_list(self, student_name: str, cohort: str, student_id: str, ghl_contact_id: str) -> Dict[str, Any]:

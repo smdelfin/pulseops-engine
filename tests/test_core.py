@@ -46,6 +46,9 @@ os.environ.setdefault("CLICKUP_WEBHOOK_SECRET", "clickup-secret")
 # - Architectural Purpose: Exercises boundary validation and route metadata without starting a server.
 # - Plain-English: 'Load the actual API components the tests verify.'
 from src.api.webhooks import PaymentWebhook, _require_event_id, _verify_signature, app
+from src.domain.provisioning import parse_provisioning_message, serialize_provisioning_message
+from scripts.reconcile_students import classify_clickup_error
+from src.services.clickup_client import ClickUpAPIError, ClickUpNotFoundError, ClickUpTimeoutError
 # - Imports the core ORM model for schema and auditor test cases.
 # - Architectural Purpose: Verifies the production model mapping rather than a test duplicate.
 # - Plain-English: 'Test the real student database model.'
@@ -88,6 +91,33 @@ from starlette.requests import Request
 # - Architectural Purpose: Keeps regression checks runnable in CI with no external service dependencies.
 # - Plain-English: 'Collect the project's core behavior checks.'
 class CoreBehaviorTests(unittest.TestCase):
+    # Ensure recovery serializes the same id field and the worker accepts it.
+    def test_recovery_messages_match_worker_queue_contract(self):
+        recovery_message = serialize_provisioning_message(23)
+        worker_payload = parse_provisioning_message(recovery_message)
+        self.assertEqual(worker_payload.id, 23)
+        with self.assertRaises(ValueError):
+            parse_provisioning_message('{"student_id": 23}')
+
+    # Ensure a provider failure is not misclassified as proof of a missing task.
+    def test_reconciliation_only_treats_clickup_404_as_confirmed_missing(self):
+        self.assertEqual(
+            classify_clickup_error(ClickUpNotFoundError("missing", status_code=404)),
+            "CONFIRMED_MISSING_IN_CLICKUP",
+        )
+        self.assertEqual(
+            classify_clickup_error(ClickUpAPIError("unauthorized", status_code=401)),
+            "CLICKUP_HTTP_ERROR_401",
+        )
+        self.assertEqual(
+            classify_clickup_error(ClickUpAPIError("server error", status_code=500)),
+            "CLICKUP_HTTP_ERROR_500",
+        )
+        self.assertEqual(
+            classify_clickup_error(ClickUpTimeoutError("timeout")),
+            "CLICKUP_UNAVAILABLE",
+        )
+
     # - Verifies that the state machine blocks a transition not present in its allowlist.
     # - Architectural Purpose: Prevents invalid business states from being persisted by any caller.
     # - Plain-English: 'Prove that a completed student cannot jump back into queue processing.'

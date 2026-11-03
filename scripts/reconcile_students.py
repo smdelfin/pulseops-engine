@@ -10,38 +10,50 @@ import logging
 # Architecture: Separates safe reporting from mutating maintenance runs.
 # Plain English: Reads script options.
 import argparse
-# Runtime: Supplies UTC timestamps and lookback durations.
-# Architecture: Defines the stale-record window used by reconciliation.
-# Plain English: Calculates when a record became old.
+from uuid import uuid4
+# Runtime: Supplies the cutoff timestamp used to select stale records.
+# Architecture: Limits reconciliation work to records that have stopped changing.
+# Plain English: Calculates which active records have been inactive too long.
 from datetime import datetime, timedelta
 # Runtime: Documents collection and result shapes.
 # Architecture: Clarifies data exchanged during cross-system reconciliation.
 # Plain English: Provides type annotations.
-from typing import List, Dict, Any
 
 # Runtime: Builds ORM queries and boolean predicates.
 # Architecture: Reads Student rows from PostgreSQL via SQLAlchemy.
 # Plain English: Provides database query tools.
-from sqlalchemy import select, update, and_, or_
-# Runtime: Supplies async ORM session support.
-# Architecture: Keeps reconciliation database access non-blocking.
-# Plain English: Lets the script talk to Postgres asynchronously.
-from sqlalchemy.ext.asyncio import AsyncSession
-# Runtime: Exposes SQLAlchemy-specific error types.
-# Architecture: Keeps database failures distinguishable for maintenance tooling.
-# Plain English: Provides database exception classes.
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import select
 
-from src.core.config import settings
 from src.core.db import SessionLocal
+from src.domain.lifecycle import StudentStatus, transition_status
+from src.domain.provisioning import ProvisioningMessage
+from src.models.messaging import OutboxEvent
 from src.models.student import Student
-from src.services.clickup_client import ClickUpClient
-from src.workers.provisioning_worker import QueueClient
+from src.models.student_transition import StudentTransition
+from src.services.clickup_client import (
+    ClickUpAPIError,
+    ClickUpClient,
+    ClickUpNotFoundError,
+    ClickUpTimeoutError,
+)
+from src.services.outbox_service import OutboxService
 
 # Runtime: Creates a named logger for reconciliation actions.
 # Architecture: Integrates repair decisions with application observability.
 # Plain English: Gives the script a logger.
 logger = logging.getLogger(__name__)
+
+
+def classify_clickup_error(error: ClickUpAPIError) -> str:
+    # Treat only the typed 404 as proof that the task does not exist.
+    if isinstance(error, ClickUpNotFoundError):
+        return "CONFIRMED_MISSING_IN_CLICKUP"
+    # Keep exhausted connectivity failures distinct so they can never trigger destructive repair.
+    if isinstance(error, ClickUpTimeoutError):
+        return "CLICKUP_UNAVAILABLE"
+    # Preserve the actual HTTP code for auth, throttling, and provider-server diagnostics.
+    return f"CLICKUP_HTTP_ERROR_{error.status_code or 'UNKNOWN'}"
+
 
 # Runtime: Defines the async reconciliation pass and its dry-run/fix mode.
 # Architecture: Compares Postgres onboarding state with ClickUp task state.
@@ -57,15 +69,20 @@ async def reconcile_students(fix: bool):
         # Plain English: Marks older records as candidates.
         cutoff_time = datetime.utcnow() - timedelta(hours=12)
         
-        # Runtime: Builds a query for active, unassigned, or stale students.
+        # Runtime: Builds a query for stale students in operational lifecycle states.
         # Architecture: Narrows reconciliation to records requiring cross-system review.
         # Plain English: Selects suspicious onboarding rows.
         query = select(Student).where(
-            or_(
-                Student.status.in_(['pending', 'queued', 'processing']),
-                Student.clickup_task_id.is_(None),
-                Student.updated_at < cutoff_time
-            )
+            Student.status.in_(
+                (
+                    StudentStatus.PENDING.value,
+                    StudentStatus.QUEUED.value,
+                    StudentStatus.PROCESSING.value,
+                    StudentStatus.ONBOARDING_STARTED.value,
+                    StudentStatus.AT_RISK.value,
+                )
+            ),
+            Student.updated_at < cutoff_time,
         )
         
         # Runtime: Executes the candidate query asynchronously against PostgreSQL.
@@ -94,21 +111,17 @@ async def reconcile_students(fix: bool):
             # Runtime: Initializes the comparison result before branching.
             # Architecture: Guarantees every candidate gets a report verdict.
             # Plain English: Starts with no decision.
-            verdict = ""
-            
-            if student.clickup_task_id:
-                try:
-                    # Verify task existence
-                    await clickup._request_with_retry("GET", f"/task/{student.clickup_task_id}", student_id=str(student.id))
-                    verdict = "CONFIRMED_PENDING"
-                except Exception:
-                    verdict = "MISSING_IN_CLICKUP"
+            if not student.clickup_task_id:
+                verdict = "NO_TASK_REFERENCE"
             else:
-                # Search for orphan (implied by target list check)
-                # For simplicity, we consider it missing if no ID exists and it's in the target state
-                verdict = "MISSING_IN_CLICKUP"
+                try:
+                    await clickup._request_with_retry("GET", f"/task/{student.clickup_task_id}", student_id=str(student.id))
+                    verdict = "TASK_EXISTS"
+                except ClickUpAPIError as exc:
+                    verdict = classify_clickup_error(exc)
 
             reconciled_data.append({
+                "student": student,
                 "id": student.id,
                 "name": student.name,
                 "db_status": student.status,
@@ -136,38 +149,72 @@ async def reconcile_students(fix: bool):
         # Architecture: Makes corrective writes explicit and safe by default.
         # Plain English: Decides whether to apply fixes.
         if fix:
-            for student in students:
-                # Logic to match the results from our loop
-                # find the verdict again or store it in a map
-                pass # Actual logic follows below for the fixable cases
-            
-            # Let's re-iterate slightly more cleanly for the fix logic
-            # In a production script, you'd map the verdict to the student object
-            # Re-running the logic slightly to perform actions
-            for student in students:
-                # Determination logic repeated for fix logic clarity
-                if student.clickup_task_id:
-                    try:
-                        await clickup._request_with_retry("GET", f"/task/{student.clickup_task_id}")
-                        if student.status in ['pending', 'queued']:
-                            # OUT_OF_SYNC -> Complete
-                            student.status = "completed"
-                            # Runtime: Commits all pending ORM changes to PostgreSQL.
-                            # Architecture: Makes reconciliation state transitions durable.
-                            # Plain English: Saves the applied fixes.
-                            await session.commit()
-                            logger.info(f"Fixed OUT_OF_SYNC for student_id={student.id}")
-                    except Exception:
-                        # MISSING_IN_CLICKUP -> Re-queue
-                        # In this script we simulate re-queuing via a dummy action or logging
-                        # as the actual QueueService implementation might vary
-                        logger.info(f"Re-queuing student_id={student.id} (MISSING_IN_CLICKUP)")
-                else:
-                    # MISSING_IN_CLICKUP -> Re-queue
-                    logger.info(f"Re-queuing student_id={student.id} (MISSING_IN_CLICKUP)")
-            
-            await session.commit()
-            print("\nReconciliation fixes applied.")
+            repaired = 0
+            for row in reconciled_data:
+                student = row["student"]
+                # Do not mutate local state unless the provider explicitly confirms a 404.
+                if row["verdict"] != "CONFIRMED_MISSING_IN_CLICKUP":
+                    continue
+                current = await session.execute(
+                    select(Student.status, Student.clickup_task_id)
+                    .where(Student.id == student.id)
+                    .with_for_update()
+                )
+                current_state = current.one_or_none()
+                if current_state is None:
+                    continue
+                current_status, current_clickup_task_id = current_state
+                if current_clickup_task_id != row["clickup_id"]:
+                    logger.info(
+                        "Skipping reconciliation for student %s because its ClickUp task reference changed",
+                        student.id,
+                    )
+                    continue
+                # Keep terminal, at-risk, and onboarding records out of the automatic retry path.
+                if current_status not in {
+                    StudentStatus.PENDING.value,
+                    StudentStatus.QUEUED.value,
+                    StudentStatus.PROCESSING.value,
+                }:
+                    logger.warning(
+                        "ClickUp task is missing but student %s is in non-retryable status %s",
+                        student.id,
+                        current_status,
+                    )
+                    continue
+
+                previous_status = current_status
+                # Re-enter the only worker-claimable lifecycle state through domain validation.
+                target_status = transition_status(previous_status, StudentStatus.QUEUED)
+                # Clear the stale external key so successful reprovisioning can store its new task ID.
+                student.clickup_task_id = None
+                student.status = target_status.value
+                # Record non-no-op lifecycle changes in the audit history.
+                if previous_status != target_status.value:
+                    session.add(StudentTransition(
+                        student_id=student.id,
+                        from_status=previous_status,
+                        to_status=target_status.value,
+                        event_type="student.reconciliation-requeued",
+                        reason="ClickUp confirmed the referenced task no longer exists",
+                    ))
+                # Commit retry intent to the transactional outbox with the worker's shared payload contract.
+                session.add(OutboxEvent(
+                    id=str(uuid4()),
+                    event_type="student.provisioning.requested",
+                    aggregate_id=student.id,
+                    payload=ProvisioningMessage(id=student.id).model_dump(),
+                ))
+                repaired += 1
+
+            if repaired:
+                # Persist student repair and queue intent atomically before trying Azure delivery.
+                await session.commit()
+                # Send due commands; failed publication remains retryable in PostgreSQL.
+                await OutboxService().publish_pending(session)
+            else:
+                await session.rollback()
+            print(f"\nReconciliation fixes applied: {repaired}")
         else:
             print("\nDry-run complete. Use --fix to apply changes.")
 

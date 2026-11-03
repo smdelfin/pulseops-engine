@@ -5,7 +5,6 @@ from src.services.alert_service import send_alert
 import os
 import signal
 import asyncio
-import json
 import logging
 import time
 import traceback
@@ -23,6 +22,7 @@ from src.core.config import settings
 # Import the per-operation async session factory and mapped student model.
 from src.core.db import SessionLocal
 from src.models.student import Student
+from src.domain.provisioning import parse_provisioning_message
 from src.services.clickup_client import ClickUpClient
 from src.domain.lifecycle import InvalidStudentTransition, StudentDomainEvent, StudentStatus, transition_status
 from src.models.student_transition import StudentTransition
@@ -42,9 +42,9 @@ async def process_message(message, queue_client: QueueClient) -> None:
     message_payload = None
     try:
         # Decode the queue's JSON body and normalize the identifier to an integer key.
-        message_payload = json.loads(message.content)
-        student_id = int(message_payload["id"])
-    except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+        message_payload = parse_provisioning_message(message.content)
+        student_id = message_payload.id
+    except (TypeError, ValueError):
         # Delete invalid poison messages because retrying malformed input cannot succeed.
         logger.error("Dropping malformed provisioning message")
         await queue_client.delete_message(message)

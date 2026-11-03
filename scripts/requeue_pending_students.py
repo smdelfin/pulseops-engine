@@ -2,30 +2,28 @@
 # Architecture: Matches the async service runtime used by FastAPI.
 # Plain English: Runs coroutine-based recovery work.
 import asyncio
-# Runtime: Serializes student records into queue message JSON.
-# Architecture: Matches Azure Storage Queue's text-message boundary.
-# Plain English: Turns Python data into a message string.
-import json
+# Runtime: Serializes the shared provisioning message into JSON text.
+# Architecture: Matches Azure Storage Queue's text-message boundary and worker contract.
+# Plain English: Formats the student ID the same way the worker reads it.
 # Runtime: Provides operational logging for recovery failures.
 # Architecture: Sends diagnostics to the same process log pipeline as workers.
 # Plain English: Writes error information.
 import logging
-# Runtime: Builds ORM SELECT expressions and OR predicates.
+# Runtime: Builds an ORM SELECT expression and status predicates.
 # Architecture: Queries PostgreSQL through SQLAlchemy's model layer.
 # Plain English: Lets the script find pending students.
-from sqlalchemy import select, or_
+from sqlalchemy import select
 # Runtime: Creates an asynchronous SQLAlchemy engine.
 # Architecture: Enables non-blocking PostgreSQL access in this maintenance job.
 # Plain English: Opens async database connections.
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 # Runtime: Creates async session factories for ORM work.
 # Architecture: Provides transactional database contexts.
 # Plain English: Builds reusable database sessions.
-from sqlalchemy.orm import sessionmaker
 
 from src.core.config import settings
-from src.core.db import SessionLocal
 from src.models.student import Student
+from src.domain.provisioning import serialize_provisioning_message
 from src.services.queue_service import QueueService
 
 # Configure logger for the recovery script
@@ -54,7 +52,7 @@ async def main() -> None:
     # Runtime: Creates a session factory bound to the async engine.
     # Architecture: Keeps each recovery query inside an explicit ORM session.
     # Plain English: Prepares sessions for database work.
-    async_session = sessionmaker(engine, expire_on_commit=False, class_=SessionLocal, bind=engine, autocommit=False, autoflush=False)
+    async_session = async_sessionmaker(engine, expire_on_commit=False)
 
     # Runtime: Instantiates the project's queue abstraction.
     # Architecture: Keeps Azure Storage Queue details behind a shared service.
@@ -78,10 +76,8 @@ async def main() -> None:
             # Architecture: Finds records whose work may have been lost from Azure Queue.
             # Plain English: Selects students that need another attempt.
             stmt = select(Student).where(
-                or_(
-                    Student.status == "pending",
-                    Student.clickup_task_id.is_(None)
-                )
+                Student.status.in_(("pending", "queued")),
+                Student.clickup_task_id.is_(None),
             )
             # Runtime: Executes the query asynchronously.
             # Architecture: Reads PostgreSQL without blocking other async work.
@@ -99,17 +95,13 @@ async def main() -> None:
                 # Runtime: Builds the minimal JSON-safe message body.
                 # Architecture: Preserves identifiers needed by provisioning_worker.
                 # Plain English: Describes the student to the queue consumer.
-                payload = {
-                    "student_id": student.id,
-                    "name": student.name,
-                    "ghl_contact_id": student.ghl_contact_id
-                }
+                payload = serialize_provisioning_message(student.id)
                 
                 # Push to Azure Storage Queue via the project's QueueService
                 # Runtime: Serializes the payload and asynchronously sends it to Azure Queue.
                 # Architecture: Re-enters the normal provisioning pipeline.
                 # Plain English: Puts the student back into the work queue.
-                await queue_service.push_message(json.dumps(payload))
+                await queue_service.push_message(payload)
                 
                 print(f"[RECOVERY] Re-enqueued student ID: {student.id} | Name: {student.name} | GHL ID: {student.ghl_contact_id}")
                 requeued_count += 1

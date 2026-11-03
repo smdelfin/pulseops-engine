@@ -4,7 +4,7 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 
 ## Latest Change
 
-The latest release adds migration `0007`, which enforces payment integrity directly in PostgreSQL. Payment records now accept only supported statuses, reject negative amounts and lowercase currency codes, and include a status/time index for operational queries. The API also trims, validates, and canonicalizes three-letter currency codes to uppercase before persistence, preventing valid provider casing from conflicting with the database invariant.
+The latest change standardizes the provisioning queue payload shared by recovery scripts and the worker, and makes reconciliation conservative: only a confirmed ClickUp 404 can trigger a retry. Before applying a repair, reconciliation locks and rechecks the current student status and ClickUp task reference to avoid acting on stale data. Student updates and retry intent are committed together through the outbox; dry-run remains read-only, and authentication, service, and network errors do not change student records.
 
 ## Features
 
@@ -34,6 +34,8 @@ The latest release adds migration `0007`, which enforces payment integrity direc
 - **Database Payment Invariants**: Migration `0007` mirrors payment status validation in PostgreSQL, rejects negative amounts and lowercase currency codes, and indexes payment status/time queries.
 - **Canonical Payment Currencies**: Payment webhooks trim and uppercase three-letter currency codes, rejecting malformed values before database access.
 - **Currency Validation Coverage**: Regression tests verify normalization of padded lowercase currency values and rejection of malformed currency codes.
+- **Recovery Queue Contract**: The provisioning worker and recovery script share a strict message schema containing the positive student `id`, preventing incompatible recovery messages from being silently discarded.
+- **Conservative Reconciliation**: Reconciliation is read-only unless `--fix` is specified; it only requeues eligible students after ClickUp confirms the referenced task is missing with HTTP 404. It locks and revalidates the current status and task reference before repair, and writes the student update and retry intent transactionally through the outbox. Missing task references and ClickUp authorization, rate-limit, server, or network errors are reported without changing student state.
 
 ## Tech Stack
 
@@ -179,8 +181,8 @@ the CI-safe values from `.env.example` or an equivalent `.env` file.
 - **Worker**: Run the worker manually for testing using `scripts/run_worker.py`.
 - **Worker compatibility**: `src/tasks/processor.py` delegates to the canonical provisioning worker so there is one queue-processing implementation.
 - **SLA Auditor**: Run the periodic operational audit script to check ClickUp sync and SLA breaches using `scripts/run_sla_auditor.py`.
-- **Recovery**: Re-enqueue unprovisioned or failed student records using `scripts/requeue_pending_students.py`.
-- **Reconciliation**: Reconcile stale database records with ClickUp tasks using `scripts/reconcile_students.py`.
+- **Recovery**: Re-enqueue pending or queued students without a ClickUp task using `scripts/requeue_pending_students.py`. Recovery messages use the shared `{"id": <student_id>}` contract consumed by the provisioning worker.
+- **Reconciliation**: Run `python scripts/reconcile_students.py` for a read-only review of stale active records. Add `--fix` to clear a task reference and stage a retry only when ClickUp explicitly returns 404; other provider/network errors and records without a task reference are never treated as proof that a task is missing.
 
 ### Reliable event flow
 
