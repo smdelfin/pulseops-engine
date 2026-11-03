@@ -75,5 +75,6 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 - **Webhooks**: Use the `scripts/simulate_*.py` scripts to test incoming webhook payloads.
 - **Seeding**: Use `scripts/seed_clickup_students.py` to populate the database with initial data.
 - **Worker**: Run the worker manually for testing using `scripts/run_worker.py`.
+- **SLA Auditor**: Run the periodic operational audit script to check ClickUp sync and SLA breaches using `scripts/run_sla_auditor.py`.
 - **Recovery**: Re-enqueue unprovisioned or failed student records using `scripts/requeue_pending_students.py`.
 - **Reconciliation**: Reconcile stale database records with ClickUp tasks using `scripts/reconcile_students.py`.
