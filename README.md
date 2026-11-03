@@ -2,6 +2,10 @@
 
 PulseOps-Engine is a backend service designed to manage student enrollment pipelines, automate record provisioning, and synchronize data between GoHighLevel (GHL) and ClickUp.
 
+## Latest Change
+
+The latest release adds migration `0007`, which enforces payment integrity directly in PostgreSQL. Payment records now accept only supported statuses, reject negative amounts and lowercase currency codes, and include a status/time index for operational queries. The ORM constraints, regression tests, CI migration checks, and deployment documentation all reflect these rules.
+
 ## Features
 
 - **Webhook Handling**: Receives and validates webhooks from GoHighLevel (e.g., "Deal Won") and ClickUp (Task Updates).
