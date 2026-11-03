@@ -1,11 +1,22 @@
+# HTTP API framework used to declare routes, validate requests, and serve the app.
 fastapi
+# ASGI server that runs the FastAPI application in development or production.
 uvicorn
+# Database toolkit plus asyncio support for non-blocking application queries.
 sqlalchemy[asyncio]
+# Async PostgreSQL driver selected by SQLAlchemy for database connections.
 asyncpg
+# Schema-migration runner used to version and apply database changes.
 alembic
+# Loads typed application settings from environment variables and .env files.
 pydantic-settings
+# Client library for sending and receiving provisioning messages through Azure Queue.
 azure-storage-queue
+# Azure authentication helpers for credential-based service access.
 azure-identity
+# Synchronous HTTP client used by integrations that do not require async transport.
 requests
+# Reads local .env files during development without hard-coding secrets in source.
 python-dotenv
+# Async HTTP client for integrations and webhook-related outbound requests.
 httpx

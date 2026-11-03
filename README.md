@@ -43,6 +43,9 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 
 ### Installation
 
+<!-- The commands in this section are operational steps: install the dependency
+     set, provide environment-specific secrets, then bring the schema and service up. -->
+
 1. Clone the repository:
    ```bash
    git clone <repository-url>
@@ -61,12 +64,16 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
    ```
 
 4. Database Migrations:
+   <!-- Applying migrations creates or updates tables to the revision expected by the
+        running application; run it against the intended database before startup. -->
    Ensure the database is up and run migrations:
    ```bash
    alembic upgrade head
    ```
 
 5. Run the Application:
+   <!-- Compose supplies local service wiring and starts the API with supporting
+        infrastructure; --build refreshes the image after source or dependency changes. -->
    Start the service using Docker Compose:
    ```bash
    docker-compose up --build

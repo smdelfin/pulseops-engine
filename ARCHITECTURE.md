@@ -3,6 +3,8 @@
 This diagram illustrates the high-level architecture of the PulseOps-Engine system, highlighting the flow of data between external services, internal workers, and the core database.
 
 ```mermaid
+%% This diagram is an operational map: inbound webhooks enter the API, durable state
+%% is stored in the database, and asynchronous work is delegated to queue workers.
 graph TD
     subgraph External_Systems [External Platforms]
         GHL[GoHighLevel]
@@ -59,6 +61,9 @@ graph TD
 
 ## Component Breakdown
 
+<!-- The sections below explain runtime ownership and data flow so operators can
+     identify which process or external platform to inspect during an incident. -->
+
 ### API Layer
 - **Webhook Handlers**: Ingests data from GoHighLevel and ClickUp, performing initial validation and routing.
 - **FastAPI App**: Provides the primary interface for data persistence and internal state management.
@@ -72,6 +77,9 @@ graph TD
 ### Processing Layer
 - **Provisioning Worker**: A background process that handles the side-effects of student onboarding (e.g., creating records in third-party apps).
 - **SLA Auditor Script**: A cron-compatible script that runs periodically to scan the whole student database for risks.
+
+<!-- The auditor is intentionally separate from the provisioning worker so periodic
+     compliance checks can continue even when onboarding work is delayed. -->
 
 ### Data Store
 - **PostgreSQL Database**: The central source of truth for all student-lifecycle data, statuses, and audit logs.

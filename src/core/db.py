@@ -1,17 +1,17 @@
-# Import core SQLAlchemy tools for asynchronous database interactions and session management.
+# Import SQLAlchemy's async engine and session factory primitives for non-blocking PostgreSQL access.
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-# Import declarative_base to define models that map directly to database tables.
+# Import the declarative base factory that registers ORM models in shared metadata.
 from sqlalchemy.orm import declarative_base
-# Import the settings singleton to access the environment-provided database URL.
+# Import validated configuration so the database layer has one authoritative connection URL.
 from src.core.config import settings
 
-# Assign the database connection string from the configuration object.
+# Copy the configured URL into a local constant used to create the engine.
 DATABASE_URL = settings.DATABASE_URL
-# Validate that the database driver is correct for asynchronous PostgreSQL interactions.
+# Fail during startup if the URL would select a synchronous or non-PostgreSQL driver.
 if not DATABASE_URL.startswith("postgresql+asyncpg://"):
     raise RuntimeError("DATABASE_URL must use the postgresql+asyncpg driver")
 
-# Initialize the asynchronous engine with connection pooling and auto-reconnect settings.
+# Create the process-wide async engine, whose pool reuses database connections across requests.
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
@@ -19,14 +19,14 @@ engine = create_async_engine(
     pool_size=10,
     max_overflow=20,
 )
-# Create a session factory to produce scoped asynchronous sessions for each request context.
+# Create a factory that gives each request or job an independently managed AsyncSession.
 SessionLocal = async_sessionmaker(autocommit=False, autoflush=False, bind=engine, class_=AsyncSession)
 
-# Registry for all SQLAlchemy models.
+# Create the metadata registry Alembic and SQLAlchemy use to discover mapped tables.
 Base = declarative_base()
 
-# Dependency injection function for FastAPI to provide a database session per request.
+# Expose a FastAPI-compatible dependency that controls session lifetime at the request boundary.
 async def get_db():
-    # Yield a session context manager to ensure automatic cleanup after the request completes.
+    # Open a session for the caller and close it deterministically when request handling ends.
     async with SessionLocal() as session:
         yield session

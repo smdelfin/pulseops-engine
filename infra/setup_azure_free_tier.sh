@@ -8,6 +8,9 @@
 # Without Azure CLI or authentication, the az commands would fail.
 
 # Variables - Replace with your target info
+# These shell variables centralize deployment inputs so the commands below remain
+# consistent; changing one value changes the target resource without changing the
+# provisioning sequence.
 # Each variable sets the values used later in az commands.
 # RESOURCE_GROUP defines the Azure Resource Group name; all resources are created under this group.
 # LOCATION specifies Azure region; using a free‑tier region keeps costs low.
@@ -17,6 +20,8 @@
 RESOURCE_GROUP="pulseops-rg-free"
 LOCATION="eastasia"
 STORAGE_ACCOUNT="pulseopsstore$(date +%s)" # Unique name
+# The timestamp suffix avoids collisions because Azure storage account names are
+# globally shared; retain only lowercase letters and numbers in production values.
 POSTGRES_SERVER="pulseops-db-server"
 CONTAINER_APP_NAME="pulseops-engine-app"
 

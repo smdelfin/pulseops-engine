@@ -1,76 +1,281 @@
+# - Defines the named sets of containers that make up the application's infrastructure.
+# - Architectural Purpose: Orchestration of multi-container local environments.
+# - Plain-English: 'This is the blueprint for how our different software parts talk to each other.'
 services:
+# - Defines the main web application service.
+# - Architectural Purpose: The public-facing API container for the FastAPI application.
+# - Plain-English: 'This is the front window where users and other systems talk to our app.'
   web:
+# - Instructs Docker to build the image from the Dockerfile in the current directory.
+# - Architectural Purpose: Build-time instruction to create a reproducible container image.
+# - Plain-English: 'Follow the recipe in the Dockerfile to build the web app container.'
     build: .
+# - Maps the host's port 8000 to the container's port 8000.
+# - Architectural Purpose: Network exposure for accessibility by external clients.
+# - Plain-English: 'Let people outside the container reach our app using a standard web address.'
     ports:
+# - Maps files in the host to the container, providing persistency.
+# - Architectural Purpose: Environment variable injection for configuration (DB credentials, keys).
+# - Plain-English: 'Pass in the secret passwords and settings we need to run.'
       - "8000:8000"
     env_file: .env
+# - Ensures the web service waits for other services to be ready before starting.
+# - Architectural Purpose: Dependency management to prevent application crashes due to missing DB/Storage.
+# - Plain-English: 'Don't start the web app until the database and storage are fully awake.'
     depends_on:
+# - Identifies the database service as a prerequisite.
+# - Architectural Purpose: Establishes a startup order.
+# - Plain-English: 'Wait for the database to be ready.'
       db:
+# - Specific check that the container reports as "healthy" via its healthcheck probe.
+# - Architectural Purpose: Fine-grained startup control (wait for internal DB readiness).
+# - Plain-English: 'Wait until the database says "I am actually ready to accept queries".'
         condition: service_healthy
+# - Identifies the Azurite (Azure Storage Emulator) service as a prerequisite.
+# - Architectural Purpose: Dependency management for messaging/queueing.
+# - Plain-English: 'Wait for the message queue storage to be ready.'
       azurite:
+# - Specific check that the Azurite emulator is responding.
+# - Architectural Purpose: Ensures reliable message queue interaction during startup.
+# - Plain-English: 'Wait until the queue system says "I am actually ready to handle messages".'
         condition: service_healthy
+# - Assigns the container to a specific virtual network.
+# - Architectural Purpose: Isolation and controlled communication between services.
+# - Plain-English: 'Put this container on our private internal network.'
     networks:
+# - Specifies the 'pulseops-net' network for this container.
+# - Architectural Purpose: Logical network segregation.
+# - Plain-English: 'Connect it to the internal wiring of our system.'
       - pulseops-net
+# - Defines the restart policy for the container.
+# - Architectural Purpose: High availability; ensures service recovers from crashes or reboots.
+# - Plain-English: 'If this crashes, try to start it back up automatically.'
     restart: unless-stopped
+# - Configures a probe to check the service's health periodically.
+# - Architectural Purpose: Monitoring and automated recovery (Self-healing infrastructure).
+# - Plain-English: 'Periodically ping the app to make sure it hasn't frozen.'
     healthcheck:
+# - The actual command run inside the container to verify health.
+# - Architectural Purpose: Probes the /health endpoint of the FastAPI app.
+# - Plain-English: 'When we ping it, it should return a success code.'
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+# - Frequency of the health check.
+# - Architectural Purpose: Balances detection speed with overhead.
+# - Plain-English: 'Check the health every 10 seconds.'
       interval: 10s
+# - Maximum time to wait for a health check response.
+# - Architectural Purpose: Prevents hanging on dead/zombie processes.
+# - Plain-English: 'If it doesn't answer in 3 seconds, consider it "down".'
       timeout: 3s
+# - Number of consecutive failures before the container is marked unhealthy.
+# - Architectural Purpose: Prevents "flapping" alerts on transient issues.
+# - Plain-English: 'Allow 5 failures before giving up and trying to restart.'
       retries: 5
-
+# - Defines the PostgreSQL database service.
+# - Architectural Purpose: Primary relational data store (RDBMS).
+# - Plain-English: 'This is the "filing cabinet" where we store all student records.'
   db:
+# - Uses the official PostgreSQL image.
+# - Architectural Purpose: Standardized platform for relational data.
+# - Plain-English: 'Use the standard Postgres database engine.'
     image: postgres:16-alpine
+# - Sets database-specific environment variables.
+# - Architectural Purpose: Configuration of initial DB state and credentials.
+# - Plain-English: 'Tell the database what username, password, and name to use.'
     environment:
+# - Sets the database user (defaults to pulseops).
+# - Architectural Purpose: Credential injection via environment variables.
+# - Plain-English: 'Set the login name for the database.'
       POSTGRES_USER: ${POSTGRES_USER:-pulseops}
+# - Sets the database password (required).
+# - Architectural Purpose: Security; enforces that a password must be provided.
+# - Plain-English: 'Required password for the database.'
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+# - Sets the database name (default pulseops).
+# - Architectural Purpose: Logical database separation.
+# - Plain-English: 'Name the specific folder inside the database.'
       POSTGRES_DB: ${POSTGRES_DB:-pulseops}
+# - Mounts a named volume to the Postgres data directory.
+# - Architectural Purpose: Persistence; ensures data survives container restarts/rebuilds.
+# - Plain-English: 'Save the database data to a permanent disk so it's not lost when we restart.'
     volumes:
+# - Maps the 'pgdata' volume to the standard Postgres data path.
+# - Architectural Purpose: Decoupling storage lifecycle from container lifecycle.
+# - Plain-English: 'Link the internal storage to the external volume named "pgdata".'
       - pgdata:/var/lib/postgresql/data
+# - Defines the health check for Postgres.
+# - Architectural Purpose: Verifies the DB engine is actually accepting connections.
+# - Plain-English: 'Make sure the database is actually listening for queries.'
     healthcheck:
+# - Uses the pg_isready utility to check connection status.
+# - Architectural Purpose: Low-level engine readiness check.
+# - Plain-English: 'Try to connect to the database to see if it's awake.'
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+# - Frequency of heartbeat.
+# - Architectural Purpose: Validates connection stability.
+# - Plain-English: 'Check every 5 seconds.'
       interval: 5s
+# - Timeout for the readiness check.
+# - Architectural Purpose: Fast failover.
+# - Plain-English: 'Give it 5 seconds to respond.'
       timeout: 5s
+# - Retry limit.
+# - Architectural Purpose: Robustness during heavy load/startup.
+# - Plain-English: 'Try 5 times before declaring it unhealthy.'
       retries: 5
+# - Network isolation.
+# - Architectural Purpose: Internal connectivity.
+# - Plain-English: 'Put the database on the internal network.'
     networks:
+# - Connects to 'pulseops-net'.
+# - Architectural Purpose: Shared internal communication channel.
+# - Plain-English: 'Give it a seat at the internal networking table.'
       - pulseops-net
+# - Restart policy.
+# - Architectural Purpose: Reliability.
+# - Plain-English: 'Restart the DB if it fails.'
     restart: unless-stopped
-
+# - Defines the Azurite service (Azure Storage Emulator).
+# - Architectural Purpose: Local simulation of Azure Blob and Queue Storage.
+# - Plain-English: 'Simulate the Azure cloud storage locally so we don't hit the real internet while testing.'
   azurite:
+# - Uses the official Microsoft Azurite image.
+# - Architectural Purpose: Emulates Blob, Queue, and Table storage.
+# - Plain-English: 'Use the Microsoft tool for simulating cloud storage.'
     image: mcr.microsoft.com/azure-storage/azurite:latest
+# - Custom command to start Azurite with specific hosts.
+# - Architectural Purpose: Configures the emulator to listen on all interfaces for local access.
+# - Plain-English: 'Tell the emulator to listen for requests on all ports.'
     command: azurite --location /data --blobHost 0.0.0.0 --queueHost 0.0.0.0
+# - Mounts a volume for emulator data.
+# - Architectural Purpose: Persistence of simulated cloud data.
+# - Plain-English: 'Save simulated cloud data to a persistent volume.'
     volumes:
+# - Maps the 'azurite_data' volume to the emulator's storage path.
+# - Architectural Purpose: Decoupling storage lifecycle.
+# - Plain-English: 'Save the emulator data to the "azurite_data" disk.'
       - azurite_data:/data
+# - Network isolation.
+# - Architectural Purpose: Access for the web/worker containers.
+# - Plain-English: 'Put the storage emulator on our internal network.'
     networks:
+# - Connects to 'pulseops-net'.
+# - Architectural Purpose: Shared internal communication channel.
+# - Plain-English: 'Connect it to the internal wiring.'
       - pulseops-net
+# - Restart policy.
+# - Architectural Purpose: Reliability.
+# - Plain-English: 'Restart the storage emulator if it fails.'
     restart: unless-stopped
+# - Defines the health check for Azurite.
+# - Architectural Purpose: Verifies the blob service is responding correctly.
+# - Plain-English: 'Check if the simulated storage is actually working.'
     healthcheck:
+# - Uses wget to check the devstoreaccount1 endpoint.
+# - Architectural Purpose: Verifies the primary emulator block.
+# - Plain-English: 'Check if the "devstoreaccount1" is responding to requests.'
       test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:10001/devstoreaccount1 || exit 1"]
+# - Frequency of the health check.
+# - Architectural Purpose: Monitor availability.
+# - Plain-English: 'Check every 5 seconds.'
       interval: 5s
+# - Timeout for the health check.
+# - Architectural Purpose: Fast detection of emulator hang.
+# - Plain-English: 'Give it 3 seconds to respond.'
       timeout: 3s
+# - Retry limit.
+# - Architectural Purpose: Resilience.
+# - Plain-English: 'Try 10 times if it fails.'
       retries: 10
-
+# - Defines the background worker service.
+# - Architectural Purpose: Offloads long-running tasks from the main web API.
+# - Plain-English: 'This is the "engine room" that does the heavy lifting behind the scenes.'
   worker:
+# - Build instructions for the worker.
+# - Architectural Purpose: Reuses the same codebase as the web service but with a different entry point.
+# - Plain-English: 'Build the worker from the same code as the web app.'
     build: .
+# - The specific Python script executed by the worker container.
+# - Architectural Purpose: Executes the provisioning logic (polling/processing).
+# - Plain-English: 'Run the provisioning script as soon as the container starts.'
     command: python src/workers/provisioning_worker.py
+# - Configuration injection.
+# - Architectural Purpose: Provides DB/Queue credentials to the worker.
+# - Plain-English: 'Give the worker its secret keys and setup info.'
     env_file: .env
+# - Dependency management.
+# - Architectural Purpose: Ensures workers don't start until the data backbone is up.
+# - Plain-English: 'Wait for the DB and storage to be ready before starting the engine room.'
     depends_on:
+# - Identifies the database as a prerequisite.
+# - Architectural Purpose: Sequential startup.
+# - Plain-English: 'Wait for the database to be ready.'
       db:
+# - Integrity check.
+# - Architectural Purpose: Ensuring DB is ready.
+# - Plain-English: 'Wait until the database says "I am ready".'
         condition: service_healthy
+# - Identifies the storage emulator as a prerequisite.
+# - Architectural Purpose: Sequential startup.
+# - Plain-English: 'Wait for the message queue to be ready.'
       azurite:
+# - Integrity check.
+# - Architectural Purpose: Ensuring storage is ready.
+# - Plain-English: 'Wait until the storage says "I am ready".'
         condition: service_healthy
+# - Network isolation.
+# - Architectural Purpose: Internal connectivity.
+# - Plain-English: 'Connect the worker to the internal network.'
     networks:
+# - Connects to 'pulseops-net'.
+# - Architectural Purpose: Shared internal communication channel.
+# - Plain-English: 'Give the worker a seat at the networking table.'
       - pulseops-net
+# - Restart policy.
+# - Architectural Purpose: Reliability.
+# - Plain-English: 'Restart the worker if it fails.'
     restart: unless-stopped
+# - Health check for the background worker.
+# - Architectural Purpose: Ensures the worker process is actually running.
+# - Plain-English: 'Check if the engine room process is still running.'
     healthcheck:
+# - Uses pgrep to look for the worker's process ID.
+# - Architectural Purpose: Verifies the script started and didn't exit immediately.
+# - Plain-English: 'Check if the python script is still active in the task list.'
       test: ["CMD-SHELL", "pgrep -f provisioning_worker.py"]
+# - Frequency of the health check.
+# - Architectural Purpose: Monitor worker liveness.
+# - Plain-English: 'Check every 10 seconds.'
       interval: 10s
+# - Timeout for the health check.
+# - Architectural Purpose: Fast detection of worker death.
+# - Plain-English: 'Give it 3 seconds to respond.'
       timeout: 3s
+# - Retry limit.
+# - Architectural Purpose: Resilience.
+# - Plain-English: 'Try 3 times before declaring it dead.'
       retries: 3
-
+# - Defines the project's internal networks.
+# - Architectural Purpose: Infrastructure definition for interconnectivity.
+# - Plain-English: 'Define the internal wiring layout of our system.'
 networks:
+# - Defines a bridge network named 'pulseops-net'.
+# - Architectural Purpose: Isolated virtual network for all containers.
+# - Plain-English: 'Create a private internal network for our containers.'
   pulseops-net:
+# - Sets the bridge driver.
+# - Architectural Purpose: Standard Docker networking driver.
+# - Plain-English: 'Use the standard bridge setup for the network.'
     driver: bridge
-
+# - Defines shared storage volumes.
+# - Architectural Purpose: Data persistence layer for the entire stack.
+# - Plain-English: 'Define the storage containers for the database and the cloud emulator.'
 volumes:
+# - Declares the Postgres data volume.
+# - Architectural Purpose: Logical volume definition.
+# - Plain-English: 'Reserve a named disk space for the database.'
   pgdata:
+# - Declares the Azurite data volume.
+# - Architectural Purpose: Logical volume definition.
+# - Plain-English: 'Reserve a named disk space for the cloud emulator.'
   azurite_data:

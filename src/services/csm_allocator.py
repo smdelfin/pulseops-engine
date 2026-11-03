@@ -1,17 +1,17 @@
-# Import List from typing to provide type hints for a sequence of strings.
+# Import List so the allocator's input and output contract is visible to readers and type checkers.
 from typing import List
-# Import the random module to handle non-deterministic selection of CSMs.
+# Import random to distribute assignments without requiring a database-backed scheduler.
 import random
 
-# Service responsible for assigning a Customer Success Manager (CSM) to a new student.
+# Encapsulate CSM assignment policy so provisioning does not know how people are selected.
 class CSMAllocator:
-    # Initialize with a list of available CSM identifiers.
+    # Accept the currently eligible CSM identifiers from configuration or a future database query.
     def __init__(self, csm_ids: List[str]):
-        # In a production scenario, these would be fetched from a DB or Config.
+        # Keep the candidate pool on the service for each assignment decision.
         self.csm_ids = csm_ids
 
-    # Select and return the next available CSM to handle the student's onboarding.
+    # Select one eligible owner so each new onboarding task has a responsible human.
     def get_next_csm(self) -> str:
         """Returns the next available CSM using round-robin or random."""
-        # Use a random choice to ensures balanced distribution of student accounts.
+        # Random selection spreads work in this lightweight implementation without shared counters.
         return random.choice(self.csm_ids)

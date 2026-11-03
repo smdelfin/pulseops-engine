@@ -1,31 +1,31 @@
-# Import BaseSettings from pydantic_settings to define a configuration schema that validates environment variables at runtime.
+# Import Pydantic's settings base so environment-backed configuration is parsed and validated when the process starts.
 from pydantic_settings import BaseSettings
-# Import Optional from typing to handle configuration keys that are not mandatory for all environments.
+# Import Optional so deployment-specific settings can explicitly represent an absent value.
 from typing import Optional
 
-# Define the application's configuration schema using a class-based approach for structured settings.
+# Define one typed configuration contract that every API, worker, and migration process can share.
 class Settings(BaseSettings):
-    # The primary connection string for the PostgreSQL database, injected via Docker or .env files.
+    # Require the async PostgreSQL URL used by SQLAlchemy to open database connections.
     DATABASE_URL: str
-    # The connection string for Azure Storage, required for both Blob and Queue interactions.
+    # Require the Azure Storage connection string used by the queue integration.
     AZURE_STORAGE_CONNECTION_STRING: str
-    # The OAuth2 token used to authenticate all requests to the ClickUp API.
+    # Require the bearer token that authenticates outbound ClickUp API calls.
     CLICKUP_API_TOKEN: str
-    # The specific team identifier in ClickUp, allowing for multi-tenant organizational targeting.
+    # Allow an optional ClickUp team identifier because some flows can operate without it locally.
     CLICKUP_TEAM_ID: Optional[str] = None
-    # The ID for the default list where new students will be provisioned as tasks.
+    # Require the ClickUp list destination used when creating onboarding work.
     CLICKUP_DEFAULT_LIST_ID: str
-    # A secret key for validating incoming GoHighLevel webhook signatures.
+    # Require the shared secret used to authenticate GoHighLevel webhook requests.
     GHL_WEBHOOK_SECRET: str
-    # A separate secret key for validating incoming ClickUp webhook signatures.
+    # Require the separate shared secret used to authenticate ClickUp webhook requests.
     CLICKUP_WEBHOOK_SECRET: str
 
-    # Internal configuration class to manage how Pydantic discovers these values.
+    # Configure how Pydantic resolves values without scattering environment parsing across services.
     class Config:
-        # Automatically attempt to read variables from a .env file in the project root.
+        # Load developer-local values from the repository's .env file when present.
         env_file = ".env"
-        # Ignore extra environment variables that are not defined in this class to prevent errors.
+        # Ignore unrelated container variables so shared Compose environments remain compatible.
         extra = "ignore"
 
-# Instantiate a singleton settings object to be imported by all service modules.
+# Build one validated settings object so all modules use the same startup-time configuration.
 settings = Settings()

@@ -1,47 +1,53 @@
-# Import logging to record events, errors, and operational statuses.
+# Import logging so queue connectivity and retry behavior are visible to operators.
 import logging
-# Import AzureError to catch specific connection or communication issues with Azure Storage.
+# Import Azure's base error type to handle service-level failures explicitly.
 from azure.core.exceptions import AzureError
-# Import the asynchronous QueueClient to support non-blocking message operations.
+# Import the async queue client so webhook requests can enqueue work without blocking FastAPI.
 from azure.storage.queue.aio import QueueClient
 
-# Import configuration to access the connection string and mandatory queue identifiers.
+# Import validated settings so credentials remain outside source code.
 from src.core.config import settings
 
-# Initialize a logger for this module to track queue health and message status.
+# Create a module-scoped logger for queue health and delivery diagnostics.
 logger = logging.getLogger(__name__)
 
-# Service to manage asynchronous interactions with Azure Storage Queues.
+# Encapsulate Azure Queue operations behind a small application-level service.
 class QueueService:
-    # Instantiate the client using the connection string provided in the environment configuration.
+    # Construct one reusable client configured for the provisioning queue.
     def __init__(self) -> None:
         self.queue_client = QueueClient.from_connection_string(
             conn_str=settings.AZURE_STORAGE_CONNECTION_STRING,
             queue_name="student-provisioning",
         )
 
-    # Push a plain-text message (typically a JSON string) into the task queue.
+    # Publish a serialized work item so the API and worker are decoupled in time.
     async def push_message(self, message_body: str) -> None:
+        # Import asyncio locally because it is only needed by the retry path.
         import asyncio
+        # Import the transient request exception used to distinguish connection failures.
         from azure.core.exceptions import ServiceRequestError
+        # Permit a bounded number of attempts so outages do not create an infinite request.
         for attempt in range(3):
             try:
-                # Ensure the designated queue exists in the storage account.
+                # Ensure first-use deployments have the target queue before sending a message.
                 await self.queue_client.create_queue()
             except AzureError:
-                # Pass if queue already exists; ignore to ensure continuity.
+                # Treat an existing queue or provisioning race as non-fatal and continue to send.
                 pass
             
             try:
-                # Execute the send operation to enqueue the student provisioning task.
+                # Send the message; Azure persists it until a worker consumes it.
                 await self.queue_client.send_message(message_body)
                 return
             except (ServiceRequestError, AzureError, ConnectionRefusedError) as e:
+                # Re-raise after the final attempt so the caller can restore database state.
                 if attempt == 2:
                     raise
+                # Log bounded exponential backoff so operators can distinguish retrying from failure.
                 logger.warning("[Queue Disconnect] Lost connection to queue: %s. Retrying in %ds...", e, 2 ** (attempt + 1))
+                # Yield to the event loop while waiting for a transient Azure outage to clear.
                 await asyncio.sleep(2 ** (attempt + 1))
 
-    # Gracefully shut down the client to release network connections and resources.
+    # Close the async client so sockets and other transport resources are released on shutdown.
     async def close(self) -> None:
         await self.queue_client.close()
