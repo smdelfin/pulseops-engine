@@ -123,6 +123,12 @@ class CoreBehaviorTests(unittest.TestCase):
         })
         self.assertEqual(_require_event_id(with_id), "provider-event-1")
 
+    def test_offboarding_transition_chain_is_explicit(self):
+        entered = transition_status(StudentStatus.COMPLETED, StudentStatus.OFFBOARDING)
+        finished = transition_status(entered, StudentStatus.REFUNDED)
+        self.assertEqual(entered, StudentStatus.OFFBOARDING)
+        self.assertEqual(finished, StudentStatus.REFUNDED)
+
 
 if __name__ == "__main__":
     unittest.main()

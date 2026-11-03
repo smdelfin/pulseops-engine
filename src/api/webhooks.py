@@ -397,10 +397,20 @@ async def offboarding_updated(request: Request):
         if not student:
             raise HTTPException(status_code=404, detail="Student not found")
         try:
-            transition_status(student.status, StudentStatus.OFFBOARDING)
+            current_status = student.status
+            offboarding_status = transition_status(current_status, StudentStatus.OFFBOARDING)
             target = transition_status(StudentStatus.OFFBOARDING, target_status)
         except InvalidStudentTransition as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if current_status != offboarding_status.value:
+            session.add(StudentTransition(
+                student_id=student.id,
+                from_status=current_status,
+                to_status=offboarding_status.value,
+                event_type="student.offboarding",
+                reason=payload.reason,
+                correlation_id=provider_event_id,
+            ))
         student.status = target.value
         session.add(OffboardingCase(
             student_id=student.id,
@@ -413,6 +423,7 @@ async def offboarding_updated(request: Request):
             to_status=target.value,
             event_type=f"student.{payload.action}",
             reason=payload.reason,
+            correlation_id=provider_event_id,
         ))
         session.add(InboxEvent(
             provider="ghl",

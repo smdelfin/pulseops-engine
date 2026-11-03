@@ -25,6 +25,7 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 - **Compose Readiness Integration**: Docker Compose probes `/ready` with the Python runtime already included in the image, so container health tracks database-backed availability without relying on an undeclared `curl` package.
 - **Deployment Validation**: CI verifies the Alembic migration graph and parses the Docker Compose configuration before changes can merge.
 - **Strict Financial Webhook Idempotency**: Payment and offboarding webhooks require the provider's stable event ID instead of inventing a random fallback that would make retries impossible to deduplicate.
+- **Auditable Offboarding Transitions**: Offboarding records both entry into `offboarding` and the final `refunded` or `cancelled` state, correlating both history entries to the provider event ID.
 
 ## Tech Stack
 
@@ -151,6 +152,7 @@ the CI-safe values from `.env.example` or an equivalent `.env` file.
 - **Payment webhook**: `POST /webhooks/payments/updated` validates the provider signature, records the payment independently, escalates failed or past-due payments to `at_risk`, and returns an idempotent duplicate response for retried events.
 - **Offboarding webhook**: `POST /webhooks/offboarding` accepts signed `refund` or `cancel` actions, transitions the student to `refunded` or `cancelled`, persists the reason and case state, and emits a durable offboarding command.
 - **Financial event IDs**: Payment and offboarding requests must include `X-Webhook-Event-Id`; missing identifiers return HTTP 400 before any database mutation.
+- **Offboarding audit history**: Each accepted offboarding event records the intermediate and terminal lifecycle transitions with the same provider-event correlation ID.
 - **CSM assignment**: Set `CSM_IDS=csm-a,csm-b` to enable least-loaded assignment for new GHL onboarding records; leave it unset to preserve unassigned intake behavior.
 - **Alert delivery**: Set `ALERT_WEBHOOK_URL` for general alerts, or override with `CSM_ALERT_WEBHOOK_URL` and `ENG_ALERT_WEBHOOK_URL`; delivery failures are logged and raised for scheduler retry handling.
 - **Alert payloads**: Notifications use a provider-neutral `text` field plus a structured `details` object, allowing chat destinations and downstream automation to consume the same event context.
@@ -184,7 +186,8 @@ the CI-safe values from `.env.example` or an equivalent `.env` file.
 2. The API rejects invalid signatures and treats either previously processed identifier as an idempotent duplicate.
 3. The payment record is committed separately from the student aggregate so financial history remains auditable.
 4. Failed, past-due, or declined payments request an `at_risk` lifecycle transition; invalid transitions return a conflict rather than silently changing state.
-5. Refund and cancellation events create an `offboarding_cases` record, transition the student through `offboarding`, and enqueue a durable command for access revocation and final communication workflows.
+5. Refund and cancellation events create an `offboarding_cases` record, persist both lifecycle transitions with a shared correlation ID, and enqueue a durable command for access revocation and final communication workflows.
+6. Operators can reconstruct the workflow as `current status → offboarding → refunded/cancelled` from `student_transitions` without relying only on the student's final status.
 
 Financial providers must send a stable `X-Webhook-Event-Id` header. The API rejects
 requests without it so a network retry cannot create a second financial record or
@@ -200,6 +203,10 @@ Content-Type: application/json
 
 The event ID must remain unchanged when the provider retries the same raw payload;
 changing it intentionally represents a new provider event.
+
+The `student_transitions` records use that same event ID as `correlation_id`,
+linking the intermediate `offboarding` entry and terminal outcome to the original
+provider notification.
 
 ### Workload-aware assignment flow
 
