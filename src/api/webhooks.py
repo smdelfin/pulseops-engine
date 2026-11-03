@@ -4,11 +4,11 @@ import hmac
 import json
 import logging
 from uuid import uuid4
-from typing import Optional
+from typing import ClassVar, Optional
 
 # Import FastAPI request primitives and Pydantic validation models for the HTTP boundary.
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 # Import SQLAlchemy's query builder for async, parameterized ORM lookups.
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -107,6 +107,17 @@ class ClickUpWebhook(BaseModel):
 
 class PaymentWebhook(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    ALLOWED_STATUSES: ClassVar[frozenset[str]] = frozenset({
+        "pending",
+        "processing",
+        "succeeded",
+        "paid",
+        "failed",
+        "past_due",
+        "declined",
+        "refunded",
+        "cancelled",
+    })
 
     ghl_contact_id: str = Field(min_length=1, max_length=200)
     provider: str = Field(min_length=1, max_length=80)
@@ -115,6 +126,14 @@ class PaymentWebhook(BaseModel):
     amount: float | None = Field(default=None, ge=0)
     currency: str | None = Field(default=None, min_length=3, max_length=3)
     failure_reason: str | None = Field(default=None, max_length=500)
+
+    @field_validator("status")
+    @classmethod
+    def normalize_status(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in cls.ALLOWED_STATUSES:
+            raise ValueError(f"Unsupported payment status: {value}")
+        return normalized
 
 
 class OffboardingWebhook(BaseModel):

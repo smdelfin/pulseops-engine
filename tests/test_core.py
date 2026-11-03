@@ -12,7 +12,7 @@ os.environ.setdefault("CLICKUP_DEFAULT_LIST_ID", "test-list")
 os.environ.setdefault("GHL_WEBHOOK_SECRET", "ghl-secret")
 os.environ.setdefault("CLICKUP_WEBHOOK_SECRET", "clickup-secret")
 
-from src.api.webhooks import _require_event_id, _verify_signature, app
+from src.api.webhooks import PaymentWebhook, _require_event_id, _verify_signature, app
 from src.models.student import Student
 from src.services.student_auditor import StudentAuditor
 from src.services.csm_allocator import CSMAllocator
@@ -128,6 +128,22 @@ class CoreBehaviorTests(unittest.TestCase):
         finished = transition_status(entered, StudentStatus.REFUNDED)
         self.assertEqual(entered, StudentStatus.OFFBOARDING)
         self.assertEqual(finished, StudentStatus.REFUNDED)
+
+    def test_payment_statuses_are_normalized_and_whitelisted(self):
+        payload = PaymentWebhook.model_validate({
+            "ghl_contact_id": "ghl-1",
+            "provider": "stripe",
+            "provider_payment_id": "pay-1",
+            "status": " PAID ",
+        })
+        self.assertEqual(payload.status, "paid")
+        with self.assertRaises(ValueError):
+            PaymentWebhook.model_validate({
+                "ghl_contact_id": "ghl-1",
+                "provider": "stripe",
+                "provider_payment_id": "pay-2",
+                "status": "mystery",
+            })
 
 
 if __name__ == "__main__":
