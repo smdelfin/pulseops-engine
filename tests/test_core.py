@@ -15,6 +15,7 @@ from src.api.webhooks import _verify_signature
 from src.models.student import Student
 from src.services.student_auditor import StudentAuditor
 from src.services.csm_allocator import CSMAllocator
+from src.services.alert_service import build_alert_payload
 from src.domain.lifecycle import InvalidStudentTransition, StudentDomainEvent, StudentStatus, transition_status
 from src.models.messaging import InboxEvent, OutboxEvent
 from src.models.student_operations import OffboardingCase, PaymentEvent
@@ -75,6 +76,11 @@ class CoreBehaviorTests(unittest.TestCase):
             CSMAllocator.choose_least_loaded(["csm-b", "csm-a"], {}),
             "csm-a",
         )
+
+    def test_alert_payload_preserves_context(self):
+        payload = build_alert_payload("Subject", "Message", {"count": 2})
+        self.assertEqual(payload["text"], "*Subject*\nMessage")
+        self.assertEqual(payload["details"]["count"], 2)
 
     def test_webhook_signature_accepts_valid_digest(self):
         body = b'{"name":"Test Student"}'
