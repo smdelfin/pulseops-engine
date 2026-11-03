@@ -34,7 +34,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 # Name worker logs so they can be filtered from API and migration logs.
 logger = logging.getLogger("worker.provisioning")
 
-# Process one queue message with database claiming, external provisioning, and acknowledgement.
+# - Processes one Azure Queue message through durable claiming, external provisioning, and acknowledgement.
+# - Architectural Purpose: Combines database idempotency, external ClickUp work, and queue retry semantics at one worker boundary.
+# - Plain-English: 'Take one queued student, set up the external task, and remove the message only when appropriate.'
 async def process_message(message, queue_client: QueueClient) -> None:
     # Keep the decoded payload available for diagnostics if later processing fails.
     message_payload = None
@@ -48,26 +50,37 @@ async def process_message(message, queue_client: QueueClient) -> None:
         await queue_client.delete_message(message)
         return
 
+    # - Sets a bounded delivery-attempt threshold before a message is sent to dead-letter storage.
+    # - Architectural Purpose: Prevents poison messages from retrying forever and blocking queue capacity.
+    # - Plain-English: 'Give a message a limited number of tries before isolating it.'
     max_dequeue_attempts = 5
+    # - Routes over-retried messages to the dead-letter queue and removes the original queue item.
     if getattr(message, "dequeue_count", 1) > max_dequeue_attempts:
         await QueueService().dead_letter_message(message.content)
         await queue_client.delete_message(message)
         logger.error("Dead-lettered student provisioning message after %s attempts", message.dequeue_count)
         return
 
-    # Start a monotonic timer to measure end-to-end provisioning latency.
+    # - Starts a monotonic timer for accurate elapsed-duration measurement.
+    # - Architectural Purpose: Monotonic time is unaffected by wall-clock corrections during processing.
+    # - Plain-English: 'Measure how long this job takes with a clock that only moves forward.'
     start_time = time.perf_counter()
     
-    # Logic to wrap the entire consumption process to prevent one message from crashing the worker.
+    # - Contains all remaining message-processing errors so one item does not terminate the worker loop.
+    # - Architectural Purpose: The outer boundary preserves queue service availability while allowing retry visibility.
+    # - Plain-English: 'Handle a failure for this message without crashing the whole worker.'
     try:
         # Scope all database work to one async session and close it after processing.
         async with SessionLocal() as session:
-            # Retry Loop for Database Concurrency Issues
+            # - Establishes a finite retry policy for transient database lock conflicts.
+            # - Architectural Purpose: Allows normal transaction contention to recover without masking persistent failures.
+            # - Plain-English: 'Retry temporary database conflicts a few times, but do not spin forever.'
             # Bound lock-conflict retries so persistent database problems surface promptly.
             max_db_retries = 3
             # Track how many serialization/deadlock retries have already occurred.
             db_retry_count = 0
             
+            # - Repeats only the claim operation when PostgreSQL reports a known transient conflict.
             while True:
                 try:
                     # Attempt to claim the message
@@ -84,6 +97,7 @@ async def process_message(message, queue_client: QueueClient) -> None:
                         return
                     # Commit the claim before calling ClickUp so another worker cannot duplicate the call.
                     await session.commit()
+                    # - Stops retrying after the row has been successfully claimed and committed.
                     break # Exit retry loop on success
                 except DBAPIError as e:
                     await session.rollback()
@@ -119,11 +133,14 @@ async def process_message(message, queue_client: QueueClient) -> None:
                 await queue_client.delete_message(message)
                 return
 
-            # Instantiate the hardened worker client
+            # - Creates the configured ClickUp adapter for the external provisioning call.
+            # - Architectural Purpose: The client owns bounded timeouts, retries, and provider error handling.
+            # - Plain-English: 'Prepare the component that creates the ClickUp task.'
             # Create the hardened ClickUp client that owns timeout and retry policy.
             clickup = ClickUpClient()
             
             # Build the intended external task representation for logging/future provider use.
+            # - Assembles a provider-shaped task summary from the freshly loaded student.
             payload = {
                 "name": f"Student: {student.name}",
                 "description": f"GHL Contact ID: {student.ghl_contact_id}\nProvisioned via PulseOps Worker",
@@ -144,11 +161,16 @@ async def process_message(message, queue_client: QueueClient) -> None:
                     ghl_contact_id=str(student.ghl_contact_id)
                 )
                 
-                # Persist the provider identifier before marking the local workflow complete.
+                # - Stores ClickUp's task identifier so later synchronization can find the external record.
+                # - Architectural Purpose: The external ID is persisted before local completion is committed.
+                # - Plain-English: 'Remember the created ClickUp task on the student.'
                 student.clickup_task_id = task_data["id"]
                 # Mark completion only after ClickUp confirms task creation.
+                # - Saves the pre-completion state for the immutable transition audit record.
                 previous_status = student.status
+                # - Moves the student through domain validation into the completed state.
                 student.status = transition_status(previous_status, StudentStatus.COMPLETED).value
+                # - Stages the status-change audit event in the same transaction as the student update.
                 session.add(StudentTransition(
                     student_id=student.id,
                     from_status=previous_status,
@@ -160,14 +182,18 @@ async def process_message(message, queue_client: QueueClient) -> None:
                     ).event_type,
                 ))
                 # Commit the external-success checkpoint so reruns remain idempotent.
+                # - Persists the task reference, completed state, and audit history together.
                 await session.commit()
+                # - Emits structured timing and correlation details for operations monitoring.
                 logger.info(
                     f"Success | student_id={student.id} | ghl_id={student.ghl_contact_id} | "
                     f"elapsed={((time.perf_counter() - start_time) * 1000):.2f}ms"
                 )
+            # - Handles provider or local persistence failures by restoring a retryable state.
             except Exception as e:
                 # Undo any uncommitted local changes after an external failure.
                 await session.rollback()
+                # - Re-queues only a row still in processing, avoiding overwriting a concurrent state change.
                 await session.execute(
                     update(Student)
                     .where(Student.id == student_id, Student.status == "processing")
@@ -178,11 +204,12 @@ async def process_message(message, queue_client: QueueClient) -> None:
                 logger.error(f"Provisioning failed for student {student_id} after retries. Error: {e}")
                 return
 
-        # Success Case
+        # - Reaches acknowledgement only after the external task and local completion were committed.
         # Acknowledge only successful processing, removing the message from Azure's queue.
         await queue_client.delete_message(message)
         logger.info("Provisioned student %s", student_id)
 
+    # - Catches unexpected worker logic errors outside the provider-specific recovery block.
     except Exception as outer_err:
         # Final containment block for unhandled logic errors
         # Roll back any open transaction before allowing the message to reappear.
@@ -196,6 +223,9 @@ async def process_message(message, queue_client: QueueClient) -> None:
         )
         # Do not delete message from queue; let it reappear via visibility timeout (poison message handling)
 
+# - Runs the queue consumer lifecycle, including initialization, signal handling, polling, and cleanup.
+# - Architectural Purpose: Owns long-lived Azure resources and ensures graceful termination in container deployments.
+# - Plain-English: 'Start the worker, keep checking for jobs, and close the queue connection when it stops.'
 async def main_worker() -> None:
     # Construct the worker's long-lived async queue client from deployment configuration.
     queue_client = QueueClient.from_connection_string(

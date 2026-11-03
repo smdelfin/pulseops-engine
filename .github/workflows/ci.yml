@@ -1,52 +1,91 @@
+# - Names the GitHub Actions workflow shown in repository checks.
+# - Architectural Purpose: Gives developers a recognizable CI status for automated validation.
+# - Plain-English: 'Call this automated build-and-test process CI.'
 name: CI
 
+# - Runs the workflow whenever changes are pushed to the primary branch.
+# - Architectural Purpose: Prevents unvalidated main-branch changes from going unnoticed.
+# - Plain-English: 'Check every update pushed to main.'
 on:
+  # - Starts the workflow for repository pushes.
   push:
+    # - Limits push-triggered runs to the deployment branch.
     branches: [main]
+  # - Also validates proposed changes before they are merged.
   pull_request:
 
+# - Defines the CI job that performs all repository validation steps.
+# - Architectural Purpose: Keeps related checks in one reproducible runner environment.
+# - Plain-English: 'Run the project's automated checks together.'
 jobs:
   test:
+    # - Selects a clean hosted Ubuntu runner for each workflow execution.
     runs-on: ubuntu-latest
+    # - Lists the ordered operations that prepare and validate the checkout.
     steps:
+      # - Retrieves the commit under test into the hosted runner.
       - name: Check out repository
         uses: actions/checkout@v4
 
+      # - Installs a known Python toolchain for consistent behavior.
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
+          # - Matches the runtime version declared by the project.
           python-version: "3.11"
 
+      # - Installs declared dependencies needed by tests and migration tooling.
       - name: Install dependencies
         run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
 
+      # - Compiles Python modules to catch syntax errors without starting services.
       - name: Compile Python sources
         run: python -m compileall -q src migrations scripts tests
 
+      # - Runs the project's unittest suite and prints each test result.
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
 
+      # - Checks Alembic has one expected head and the latest migration follows its intended parent.
       - name: Validate migration graph
+        # - Supplies harmless required settings because importing Alembic configuration loads app settings.
         env:
+          # - Uses a syntactically valid async PostgreSQL URL without connecting during graph inspection.
           DATABASE_URL: postgresql+asyncpg://ci:ci@localhost/pulseops
+          # - Satisfies storage configuration validation without using a real Azure account.
           AZURE_STORAGE_CONNECTION_STRING: UseDevelopmentStorage=true
+          # - Supplies placeholder integration credentials for settings construction only.
           CLICKUP_API_TOKEN: ci-token
+          # - Supplies a placeholder ClickUp list to satisfy application configuration.
           CLICKUP_DEFAULT_LIST_ID: ci-list
+          # - Provides test-only webhook signing material.
           GHL_WEBHOOK_SECRET: ci-ghl-secret
+          # - Provides test-only ClickUp webhook signing material.
           CLICKUP_WEBHOOK_SECRET: ci-clickup-secret
+        # - Fails the job unless 0007 is the unique head and the 0006-to-0007 edge exists.
         run: |
           test "$(alembic heads | grep -c '0007')" -eq 1
           test "$(alembic history | grep -c '0006 -> 0007')" -eq 1
 
+      # - Verifies Compose can render the stack configuration with CI-safe environment values.
       - name: Validate Docker Compose configuration
+        # - Supplies non-secret values needed for Compose variable interpolation.
         env:
+          # - Uses a disposable password for configuration parsing only.
           POSTGRES_PASSWORD: ci-password
+          # - Provides a Compose-network database URL without contacting PostgreSQL.
           DATABASE_URL: postgresql+asyncpg://pulseops:ci-password@db:5432/pulseops
+          # - Uses the local-development storage value to satisfy configuration.
           AZURE_STORAGE_CONNECTION_STRING: UseDevelopmentStorage=true
+          # - Supplies placeholders so application variables resolve without real credentials.
           CLICKUP_API_TOKEN: ci-token
+          # - Supplies a placeholder list identifier.
           CLICKUP_DEFAULT_LIST_ID: ci-list
+          # - Supplies a non-production signing secret.
           GHL_WEBHOOK_SECRET: ci-ghl-secret
+          # - Supplies a non-production ClickUp signing secret.
           CLICKUP_WEBHOOK_SECRET: ci-clickup-secret
+        # - Creates the environment file expected by Compose and validates the rendered model only.
         run: |
           cp .env.example .env
           docker compose config --quiet
