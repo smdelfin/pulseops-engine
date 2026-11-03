@@ -32,6 +32,13 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertIn("is_paused", Student.__table__.columns)
         self.assertFalse(Student.__table__.c.is_paused.nullable)
 
+    def test_student_model_contains_dashboard_dimensions_and_indexes(self):
+        self.assertIn("cohort", Student.__table__.columns)
+        index_names = {index.name for index in Student.__table__.indexes}
+        self.assertIn("ix_students_status_updated_at", index_names)
+        self.assertIn("ix_students_program_cohort_status", index_names)
+        self.assertIn("ux_students_clickup_task_id", index_names)
+
     def test_auditor_flags_status_sla_breach(self):
         student = Student(
             id=1,

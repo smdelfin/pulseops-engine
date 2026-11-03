@@ -119,6 +119,7 @@ async def ghl_deal_won(request: Request):
                 student = Student(
                     name=payload.name,
                     ghl_contact_id=payload.ghl_contact_id,
+                    cohort=payload.cohort,
                     status="queued",
                 )
                 # Stage the insert and force the database to allocate the primary key now.

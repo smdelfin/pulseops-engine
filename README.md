@@ -14,6 +14,7 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 - **Regression Coverage**: Added unit tests for the Student ORM model, SLA evaluation, and webhook signature validation.
 - **Continuous Integration**: GitHub Actions compiles the Python sources and runs the unit test suite on pushes to `main` and pull requests.
 - **Explicit Lifecycle Contracts**: Student status transitions are validated through a typed state machine, recorded in `student_transitions`, and represented by stable domain-event envelopes.
+- **Scale-Oriented Student Schema**: Cohort is persisted for segmentation, dashboard query indexes cover status/CSM/program workloads, and database checks protect health scores, follow-up counts, lifecycle statuses, and duplicate ClickUp task IDs.
 
 ## Tech Stack
 
@@ -40,6 +41,17 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 - `scripts/`: Utility scripts for seeding data and simulating webhook traffic.
 - `tests/`: Regression tests for core model, webhook, and SLA behavior.
 - `.github/workflows/ci.yml`: Automated compilation and test workflow.
+
+## Student Data Model
+
+The `students` table is the operational source of truth for onboarding and CSM workflows:
+
+- `program_type` and `cohort` support program-level and cohort-level reporting.
+- `status`, `assigned_csm_id`, and `updated_at` are indexed for queue, dashboard, and auditor queries.
+- `health_score` is constrained to `0-100`, while `follow_up_count` cannot be negative.
+- Lifecycle values are constrained to the supported state-machine statuses.
+- `clickup_task_id` is unique so one external task cannot be attached to multiple students.
+- `student_transitions` stores the immutable history of lifecycle changes.
 
 ## Getting Started
 
@@ -78,6 +90,7 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
    ```bash
    alembic upgrade head
    ```
+   This applies revisions `0001` through `0004`, including lifecycle history and schema-hardening constraints.
 
 5. Run the Application:
    <!-- Compose supplies local service wiring and starts the API with supporting
@@ -99,6 +112,7 @@ python -m unittest discover -s tests -v
 ```
 
 - **Lifecycle migration**: Apply revision `0003` with `alembic upgrade head` to create the `student_transitions` audit table.
+- **Schema hardening migration**: Revision `0004` adds cohort data, operational indexes, and database constraints for the student record.
 - **Lifecycle behavior**: Invalid status changes are rejected, while supported ClickUp statuses are normalized into internal lifecycle states before persistence.
 - **Webhooks**: Use the `scripts/simulate_*.py` scripts to test incoming webhook payloads.
 - **Seeding**: Use `scripts/seed_clickup_students.py` to populate the database with initial data.
