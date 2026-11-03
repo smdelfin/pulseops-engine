@@ -2,7 +2,7 @@
 # Runtime: Docstring used by Alembic to identify migration description.
 # Architecture: Provides migration metadata for SQLAlchemy.
 # Summary: Declares this migration will create the students table.
-Revision ID: 0001_create_students
+Revision ID: 0001
 # Runtime: Unique ID for this migration applied sequentially.
 # Architecture: Ensures migration order.
 # Summary: Migration identifier.
@@ -21,7 +21,7 @@ import sqlalchemy as sa
 # Architecture: Supplies column type constructors.
 # Summary: Imports SQLAlchemy to describe table schema.
 
-revision = "0001_create_students"
+revision = "0001"
 # Runtime: Identifier used by Alembic to track migrations.
 # Architecture: Marks this migration's unique ID.
 # Summary: Sets the current migration ID.
@@ -77,4 +77,3 @@ def downgrade() -> None:
     # Summary: Cleans up the students table.
     op.drop_index("ix_students_id", table_name="students")
     op.drop_table("students")
-

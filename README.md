@@ -23,6 +23,7 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 - **Operational Alert Delivery**: Configured alert webhooks now receive structured engineering and CSM notifications with bounded HTTP timeouts and explicit delivery failures.
 - **Readiness Monitoring**: Separate liveness and readiness endpoints let container orchestrators restart unhealthy processes while keeping traffic away from instances that cannot reach PostgreSQL.
 - **Compose Readiness Integration**: Docker Compose probes `/ready` with the Python runtime already included in the image, so container health tracks database-backed availability without relying on an undeclared `curl` package.
+- **Deployment Validation**: CI verifies the Alembic migration graph and parses the Docker Compose configuration before changes can merge.
 
 ## Tech Stack
 
@@ -131,6 +132,17 @@ python -m compileall -q src migrations scripts tests
 python -m unittest discover -s tests -v
 ```
 
+Validate the deployment graph locally with the same checks used by CI:
+
+```bash
+alembic heads
+alembic history
+docker compose config --quiet
+```
+
+The migration output should show one head at `0006`; Compose configuration requires
+the CI-safe values from `.env.example` or an equivalent `.env` file.
+
 - **Lifecycle migration**: Apply revision `0003` with `alembic upgrade head` to create the `student_transitions` audit table.
 - **Schema hardening migration**: Revision `0004` adds cohort data, operational indexes, and database constraints for the student record.
 - **Messaging migration**: Revision `0005` adds inbox deduplication and retryable outbox records.
@@ -142,6 +154,8 @@ python -m unittest discover -s tests -v
 - **Alert payloads**: Notifications use a provider-neutral `text` field plus a structured `details` object, allowing chat destinations and downstream automation to consume the same event context.
 - **Health probes**: `GET /health` checks process liveness only; `GET /ready` performs a PostgreSQL round trip and returns HTTP 503 when the database is unavailable.
 - **Compose healthcheck**: The web container calls `/ready` with Python's standard-library HTTP client; this keeps the image dependency set and deployment health contract aligned.
+- **CI deployment checks**: GitHub Actions confirms revision `0006` is the current migration head and runs `docker compose config --quiet` with safe CI-only environment values.
+- **Migration graph**: The initial migration is revision `0001`, followed linearly through `0006`; CI fails if a revision reference is missing or multiple heads are introduced.
 - **Outbox operation**: Webhooks commit the student update and outbox command together; the publisher then retries pending commands with exponential backoff until Azure Queue accepts them.
 - **Dead-letter operation**: Messages that exceed the worker dequeue-attempt limit are copied to `student-provisioning-deadletter` for inspection and replay instead of being silently discarded.
 - **Lifecycle behavior**: Invalid status changes are rejected, while supported ClickUp statuses are normalized into internal lifecycle states before persistence.

@@ -93,6 +93,12 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertIn("http://localhost:8000/ready", compose)
         self.assertNotIn("curl -f http://localhost:8000/health", compose)
 
+    def test_ci_validates_migrations_and_compose_configuration(self):
+        workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "ci.yml").read_text()
+        self.assertIn("Validate migration graph", workflow)
+        self.assertIn("Validate Docker Compose configuration", workflow)
+        self.assertIn("docker compose config --quiet", workflow)
+
     def test_webhook_signature_accepts_valid_digest(self):
         body = b'{"name":"Test Student"}'
         secret = "secret"

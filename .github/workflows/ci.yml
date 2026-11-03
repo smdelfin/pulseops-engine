@@ -25,3 +25,28 @@ jobs:
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
+
+      - name: Validate migration graph
+        env:
+          DATABASE_URL: postgresql+asyncpg://ci:ci@localhost/pulseops
+          AZURE_STORAGE_CONNECTION_STRING: UseDevelopmentStorage=true
+          CLICKUP_API_TOKEN: ci-token
+          CLICKUP_DEFAULT_LIST_ID: ci-list
+          GHL_WEBHOOK_SECRET: ci-ghl-secret
+          CLICKUP_WEBHOOK_SECRET: ci-clickup-secret
+        run: |
+          test "$(alembic heads | grep -c '0006')" -eq 1
+          test "$(alembic history | grep -c '0005 -> 0006')" -eq 1
+
+      - name: Validate Docker Compose configuration
+        env:
+          POSTGRES_PASSWORD: ci-password
+          DATABASE_URL: postgresql+asyncpg://pulseops:ci-password@db:5432/pulseops
+          AZURE_STORAGE_CONNECTION_STRING: UseDevelopmentStorage=true
+          CLICKUP_API_TOKEN: ci-token
+          CLICKUP_DEFAULT_LIST_ID: ci-list
+          GHL_WEBHOOK_SECRET: ci-ghl-secret
+          CLICKUP_WEBHOOK_SECRET: ci-clickup-secret
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
