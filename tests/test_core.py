@@ -16,6 +16,7 @@ from src.models.student import Student
 from src.services.student_auditor import StudentAuditor
 from src.domain.lifecycle import InvalidStudentTransition, StudentDomainEvent, StudentStatus, transition_status
 from src.models.messaging import InboxEvent, OutboxEvent
+from src.models.student_operations import OffboardingCase, PaymentEvent
 from fastapi import HTTPException
 
 
@@ -45,6 +46,12 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertIn("payload", OutboxEvent.__table__.columns)
         self.assertIn("available_at", OutboxEvent.__table__.columns)
         self.assertIn("attempts", OutboxEvent.__table__.columns)
+
+    def test_payment_and_offboarding_models_are_separate_workflows(self):
+        self.assertIn("provider_payment_id", PaymentEvent.__table__.columns)
+        self.assertIn("failure_reason", PaymentEvent.__table__.columns)
+        self.assertIn("access_revoked", OffboardingCase.__table__.columns)
+        self.assertIn("final_communication_sent", OffboardingCase.__table__.columns)
 
     def test_auditor_flags_status_sla_breach(self):
         student = Student(

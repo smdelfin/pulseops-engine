@@ -21,6 +21,7 @@ from src.domain.lifecycle import InvalidStudentTransition, StudentDomainEvent, S
 from src.models.student_transition import StudentTransition
 from src.models.messaging import InboxEvent, OutboxEvent
 from src.services.outbox_service import OutboxService
+from src.models.student_operations import OffboardingCase, PaymentEvent
 
 # Configure a useful default log level for local runs and container diagnostics.
 logging.basicConfig(level=logging.INFO)
@@ -84,6 +85,26 @@ class ClickUpWebhook(BaseModel):
     event: str
     # Keep the history list optional so non-status events can be ignored cleanly.
     history_items: list[ClickUpHistoryItem] = []
+
+
+class PaymentWebhook(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ghl_contact_id: str = Field(min_length=1, max_length=200)
+    provider: str = Field(min_length=1, max_length=80)
+    provider_payment_id: str = Field(min_length=1, max_length=200)
+    status: str = Field(min_length=1, max_length=40)
+    amount: float | None = Field(default=None, ge=0)
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
+    failure_reason: str | None = Field(default=None, max_length=500)
+
+
+class OffboardingWebhook(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ghl_contact_id: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=200)
+    action: str = Field(pattern="^(refund|cancel)$")
 
 
 # Verify a provider HMAC before parsing or acting on an inbound webhook.
@@ -249,3 +270,132 @@ async def clickup_task_updated(request: Request):
         await session.commit()
     # Tell the caller which task and status were applied.
     return {"status": "synchronized", "task_id": payload.task_id, "new_status": target_status.value}
+
+
+@app.post("/webhooks/payments/updated")
+async def payment_updated(request: Request):
+    raw_body = await request.body()
+    _verify_signature(raw_body, request.headers.get("X-Webhook-Signature"), settings.GHL_WEBHOOK_SECRET)
+    payload = PaymentWebhook.model_validate_json(raw_body)
+    provider_event_id = request.headers.get("X-Webhook-Event-Id") or str(uuid4())
+
+    async with SessionLocal() as session:
+        duplicate = await session.scalar(
+            select(InboxEvent).where(
+                InboxEvent.provider == payload.provider,
+                InboxEvent.provider_event_id == provider_event_id,
+            )
+        )
+        if duplicate:
+            return {"status": "duplicate", "event_id": provider_event_id}
+
+        student = await session.scalar(
+            select(Student).where(Student.ghl_contact_id == payload.ghl_contact_id).with_for_update()
+        )
+        if not student:
+            raise HTTPException(status_code=404, detail="Student not found")
+        existing_payment = await session.scalar(
+            select(PaymentEvent).where(
+                PaymentEvent.provider == payload.provider,
+                PaymentEvent.provider_payment_id == payload.provider_payment_id,
+            )
+        )
+        if existing_payment:
+            return {"status": "duplicate", "payment_id": existing_payment.id}
+
+        session.add(PaymentEvent(
+            student_id=student.id,
+            provider=payload.provider,
+            provider_payment_id=payload.provider_payment_id,
+            status=payload.status.lower(),
+            amount=payload.amount,
+            currency=payload.currency.upper() if payload.currency else None,
+            failure_reason=payload.failure_reason,
+        ))
+        session.add(InboxEvent(
+            provider=payload.provider,
+            provider_event_id=provider_event_id,
+            payload=payload.model_dump(),
+        ))
+        if payload.status.lower() in {"failed", "past_due", "declined"}:
+            try:
+                target_status = transition_status(student.status, StudentStatus.AT_RISK)
+            except InvalidStudentTransition as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            session.add(StudentTransition(
+                student_id=student.id,
+                from_status=student.status,
+                to_status=target_status.value,
+                event_type="payment.failed",
+                reason=payload.failure_reason,
+            ))
+            student.status = target_status.value
+        session.add(OutboxEvent(
+            id=str(uuid4()),
+            event_type=f"payment.{payload.status.lower()}",
+            aggregate_id=student.id,
+            payload={"student_id": student.id, "payment_id": payload.provider_payment_id},
+        ))
+        await session.commit()
+
+    async with SessionLocal() as session:
+        await outbox_service.publish_pending(session)
+    return {"status": "accepted", "student_id": student.id, "event_id": provider_event_id}
+
+
+@app.post("/webhooks/offboarding")
+async def offboarding_updated(request: Request):
+    raw_body = await request.body()
+    _verify_signature(raw_body, request.headers.get("X-Webhook-Signature"), settings.GHL_WEBHOOK_SECRET)
+    payload = OffboardingWebhook.model_validate_json(raw_body)
+    provider_event_id = request.headers.get("X-Webhook-Event-Id") or str(uuid4())
+    target_status = StudentStatus.REFUNDED if payload.action == "refund" else StudentStatus.CANCELLED
+
+    async with SessionLocal() as session:
+        duplicate = await session.scalar(
+            select(InboxEvent).where(
+                InboxEvent.provider == "ghl",
+                InboxEvent.provider_event_id == provider_event_id,
+            )
+        )
+        if duplicate:
+            return {"status": "duplicate", "event_id": provider_event_id}
+        student = await session.scalar(
+            select(Student).where(Student.ghl_contact_id == payload.ghl_contact_id).with_for_update()
+        )
+        if not student:
+            raise HTTPException(status_code=404, detail="Student not found")
+        try:
+            transition_status(student.status, StudentStatus.OFFBOARDING)
+            target = transition_status(StudentStatus.OFFBOARDING, target_status)
+        except InvalidStudentTransition as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        student.status = target.value
+        session.add(OffboardingCase(
+            student_id=student.id,
+            reason=payload.reason,
+            status="open",
+        ))
+        session.add(StudentTransition(
+            student_id=student.id,
+            from_status=StudentStatus.OFFBOARDING.value,
+            to_status=target.value,
+            event_type=f"student.{payload.action}",
+            reason=payload.reason,
+        ))
+        session.add(InboxEvent(
+            provider="ghl",
+            provider_event_id=provider_event_id,
+            payload=payload.model_dump(),
+        ))
+        session.add(OutboxEvent(
+            id=str(uuid4()),
+            event_type=f"offboarding.{payload.action}",
+            aggregate_id=student.id,
+            payload={"student_id": student.id, "reason": payload.reason},
+        ))
+        await session.commit()
+
+    async with SessionLocal() as session:
+        await outbox_service.publish_pending(session)
+    return {"status": "accepted", "student_id": student.id, "event_id": provider_event_id}

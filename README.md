@@ -16,6 +16,9 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 - **Explicit Lifecycle Contracts**: Student status transitions are validated through a typed state machine, recorded in `student_transitions`, and represented by stable domain-event envelopes.
 - **Scale-Oriented Student Schema**: Cohort is persisted for segmentation, dashboard query indexes cover status/CSM/program workloads, and database checks protect health scores, follow-up counts, lifecycle statuses, and duplicate ClickUp task IDs.
 - **Durable Messaging**: Inbox deduplication prevents repeated provider events, PostgreSQL outbox records close the database-to-queue delivery gap, retry backoff preserves failed publications, and exhausted queue messages are sent to `student-provisioning-deadletter`.
+- **Payment and Offboarding Workflows**: Payment events are stored independently from student status, failed payments can mark a student at risk, and refund/cancellation events create auditable offboarding cases with durable workflow commands.
+- **Payment Idempotency**: Payment webhooks deduplicate both provider event IDs and provider payment IDs, preventing retries from creating duplicate payment records or repeated student transitions.
+- **Refund and Cancellation Handling**: Signed refund or cancellation webhooks move eligible students through the lifecycle state machine, create an open offboarding case, and enqueue follow-up work through the transactional outbox.
 
 ## Tech Stack
 
@@ -36,6 +39,7 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 - `src/models/`: Database models (e.g., Student).
 - `src/models/student_transition.py`: Durable audit history for student lifecycle changes.
 - `src/models/messaging.py`: Inbox and outbox persistence models for reliable event delivery.
+- `src/models/student_operations.py`: Payment-event and offboarding-case persistence models.
 - `src/services/`: External API clients (ClickUp, Queue Service) and business logic.
 - `src/services/outbox_service.py`: Retryable publisher for pending PostgreSQL outbox events.
 - `src/tasks/`: Logic for data processing and orchestration.
@@ -93,7 +97,7 @@ The `students` table is the operational source of truth for onboarding and CSM w
    ```bash
    alembic upgrade head
    ```
-   This applies revisions `0001` through `0004`, including lifecycle history and schema-hardening constraints.
+   This applies revisions `0001` through `0006`, including lifecycle history, schema-hardening constraints, durable messaging, and payment/offboarding workflows.
 
 5. Run the Application:
    <!-- Compose supplies local service wiring and starts the API with supporting
@@ -117,6 +121,9 @@ python -m unittest discover -s tests -v
 - **Lifecycle migration**: Apply revision `0003` with `alembic upgrade head` to create the `student_transitions` audit table.
 - **Schema hardening migration**: Revision `0004` adds cohort data, operational indexes, and database constraints for the student record.
 - **Messaging migration**: Revision `0005` adds inbox deduplication and retryable outbox records.
+- **Operations migration**: Revision `0006` adds payment-event and offboarding-case records.
+- **Payment webhook**: `POST /webhooks/payments/updated` validates the provider signature, records the payment independently, escalates failed or past-due payments to `at_risk`, and returns an idempotent duplicate response for retried events.
+- **Offboarding webhook**: `POST /webhooks/offboarding` accepts signed `refund` or `cancel` actions, transitions the student to `refunded` or `cancelled`, persists the reason and case state, and emits a durable offboarding command.
 - **Outbox operation**: Webhooks commit the student update and outbox command together; the publisher then retries pending commands with exponential backoff until Azure Queue accepts them.
 - **Dead-letter operation**: Messages that exceed the worker dequeue-attempt limit are copied to `student-provisioning-deadletter` for inspection and replay instead of being silently discarded.
 - **Lifecycle behavior**: Invalid status changes are rejected, while supported ClickUp statuses are normalized into internal lifecycle states before persistence.
@@ -136,3 +143,11 @@ python -m unittest discover -s tests -v
 4. The outbox publisher sends the command to Azure Storage Queue and records publication or retry metadata.
 5. The worker claims the student, performs provisioning, and acknowledges the queue message.
 6. Repeatedly failing messages are moved to the dead-letter queue for operator review.
+
+### Payment and offboarding flow
+
+1. The payment provider sends a signed payment update with a provider event ID and payment ID.
+2. The API rejects invalid signatures and treats either previously processed identifier as an idempotent duplicate.
+3. The payment record is committed separately from the student aggregate so financial history remains auditable.
+4. Failed, past-due, or declined payments request an `at_risk` lifecycle transition; invalid transitions return a conflict rather than silently changing state.
+5. Refund and cancellation events create an `offboarding_cases` record, transition the student through `offboarding`, and enqueue a durable command for access revocation and final communication workflows.
