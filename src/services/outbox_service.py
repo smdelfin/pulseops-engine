@@ -104,3 +104,7 @@ class OutboxService:
         await session.commit()
         # - Returns a simple metric for worker logging and scheduler monitoring.
         return published
+
+    async def close(self) -> None:
+        # - Closes the queue adapter's async client and releases its network resources.
+        await self.queue_service.close()

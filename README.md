@@ -4,7 +4,7 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 
 ## Latest Change
 
-The latest change standardizes the provisioning queue payload shared by recovery scripts and the worker, and makes reconciliation conservative: only a confirmed ClickUp 404 can trigger a retry. Before applying a repair, reconciliation locks and rechecks the current student status and ClickUp task reference to avoid acting on stale data. Student updates and retry intent are committed together through the outbox; dry-run remains read-only, and authentication, service, and network errors do not change student records.
+The latest change adds an independent outbox publisher so pending database events continue retrying without waiting for another webhook. The publisher runs as a dedicated Docker Compose service, polls every five seconds, and handles up to 50 due events per batch while skipping rows locked by other publishers. Failed deliveries remain durable and use capped exponential retry delays; the publisher also closes its queue client on graceful shutdown.
 
 ## Features
 
@@ -36,6 +36,7 @@ The latest change standardizes the provisioning queue payload shared by recovery
 - **Currency Validation Coverage**: Regression tests verify normalization of padded lowercase currency values and rejection of malformed currency codes.
 - **Recovery Queue Contract**: The provisioning worker and recovery script share a strict message schema containing the positive student `id`, preventing incompatible recovery messages from being silently discarded.
 - **Conservative Reconciliation**: Reconciliation is read-only unless `--fix` is specified; it only requeues eligible students after ClickUp confirms the referenced task is missing with HTTP 404. It locks and revalidates the current status and task reference before repair, and writes the student update and retry intent transactionally through the outbox. Missing task references and ClickUp authorization, rate-limit, server, or network errors are reported without changing student state.
+- **Independent Outbox Dispatch**: A dedicated publisher polls PostgreSQL for due outbox events and retries Azure Queue delivery independently of webhook traffic; Docker Compose runs it as a separate restartable service.
 
 ## Tech Stack
 
@@ -63,7 +64,7 @@ The latest change standardizes the provisioning queue payload shared by recovery
 - `src/services/`: External API clients (ClickUp, Queue Service) and business logic.
 - `src/services/outbox_service.py`: Retryable publisher for pending PostgreSQL outbox events.
 - `src/tasks/`: Logic for data processing and orchestration.
-- `src/workers/`: Canonical background worker execution loop with queue retries and graceful shutdown.
+- `src/workers/`: Provisioning and independent outbox publisher loops with queue retries and graceful shutdown.
 - `migrations/`: Alembic migration scripts.
 - `scripts/`: Utility scripts for seeding data and simulating webhook traffic.
 - `tests/`: Regression tests for core model, webhook, and SLA behavior.
@@ -174,11 +175,13 @@ the CI-safe values from `.env.example` or an equivalent `.env` file.
 - **CI deployment checks**: GitHub Actions confirms revision `0007` is the current migration head and runs `docker compose config --quiet` with safe CI-only environment values.
 - **Migration graph**: The initial migration is revision `0001`, followed linearly through `0007`; CI fails if a revision reference is missing or multiple heads are introduced.
 - **Outbox operation**: Webhooks commit the student update and outbox command together; the publisher then retries pending commands with exponential backoff until Azure Queue accepts them.
+- **Outbox publisher service**: Docker Compose runs `src/workers/outbox_publisher.py` as an independent process, polling every five seconds so retryable outbox events do not depend on later API requests.
 - **Dead-letter operation**: Messages that exceed the worker dequeue-attempt limit are copied to `student-provisioning-deadletter` for inspection and replay instead of being silently discarded.
 - **Lifecycle behavior**: Invalid status changes are rejected, while supported ClickUp statuses are normalized into internal lifecycle states before persistence.
 - **Webhooks**: Use the `scripts/simulate_*.py` scripts to test incoming webhook payloads.
 - **Seeding**: Use `scripts/seed_clickup_students.py` to populate the database with initial data.
 - **Worker**: Run the worker manually for testing using `scripts/run_worker.py`.
+- **Outbox publisher**: Run `python src/workers/outbox_publisher.py` to independently poll and publish pending outbox events; Docker Compose starts this process as `outbox-publisher`.
 - **Worker compatibility**: `src/tasks/processor.py` delegates to the canonical provisioning worker so there is one queue-processing implementation.
 - **SLA Auditor**: Run the periodic operational audit script to check ClickUp sync and SLA breaches using `scripts/run_sla_auditor.py`.
 - **Recovery**: Re-enqueue pending or queued students without a ClickUp task using `scripts/requeue_pending_students.py`. Recovery messages use the shared `{"id": <student_id>}` contract consumed by the provisioning worker.

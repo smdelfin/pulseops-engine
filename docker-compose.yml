@@ -255,6 +255,47 @@ services:
 # - Architectural Purpose: Resilience.
 # - Plain-English: 'Try 3 times before declaring it dead.'
       retries: 3
+# - Defines the independent dispatcher for durable PostgreSQL outbox events.
+# - Architectural Purpose: Publishes retryable work even when no new webhook arrives to trigger an API-side send.
+# - Plain-English: 'Keep checking saved messages and sending them to Azure Queue.'
+  outbox-publisher:
+# - Builds the dispatcher from the same application image as the API and worker.
+# - Architectural Purpose: Reuses the project dependencies and source code without a separate image.
+# - Plain-English: 'Use the existing application container recipe.'
+    build: .
+# - Starts the standalone outbox polling process.
+# - Architectural Purpose: Gives durable event publication an always-on runtime lifecycle.
+# - Plain-English: 'Run the background process that delivers pending outbox messages.'
+    command: python src/workers/outbox_publisher.py
+# - Injects PostgreSQL and Azure Storage settings from the deployment environment.
+# - Architectural Purpose: Keeps credentials external to the image and source code.
+# - Plain-English: 'Provide the database and queue connection settings.'
+    env_file: .env
+# - Waits for required services before starting the publisher.
+# - Architectural Purpose: Prevents repeated startup failures while dependencies initialize.
+# - Plain-English: 'Start only after PostgreSQL and queue storage are ready.'
+    depends_on:
+      db:
+        condition: service_healthy
+      azurite:
+        condition: service_healthy
+# - Connects the publisher to the private application network.
+# - Architectural Purpose: Allows access to PostgreSQL and Azurite without public exposure.
+# - Plain-English: 'Connect the dispatcher to internal services.'
+    networks:
+      - pulseops-net
+# - Restarts the publisher after an unexpected process exit.
+# - Architectural Purpose: Recovers the independent retry loop without operator intervention.
+# - Plain-English: 'Restart the dispatcher if it crashes.'
+    restart: unless-stopped
+# - Checks that the outbox publisher process remains alive.
+# - Architectural Purpose: Lets Compose detect a stopped background dispatcher.
+# - Plain-English: 'Confirm the message sender is still running.'
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f outbox_publisher.py"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
 # - Defines the project's internal networks.
 # - Architectural Purpose: Infrastructure definition for interconnectivity.
 # - Plain-English: 'Define the internal wiring layout of our system.'

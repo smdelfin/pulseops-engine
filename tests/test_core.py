@@ -1,6 +1,7 @@
 # - Imports hashing and HMAC primitives used to construct valid webhook signatures in tests.
 # - Architectural Purpose: Exercises the same standard-library cryptography used at the API boundary.
 # - Plain-English: 'Create realistic signed test requests without contacting a provider.'
+import asyncio
 import hashlib
 import hmac
 # - Imports environment access to configure required settings before application imports.
@@ -49,6 +50,7 @@ from src.api.webhooks import PaymentWebhook, _require_event_id, _verify_signatur
 from src.domain.provisioning import parse_provisioning_message, serialize_provisioning_message
 from scripts.reconcile_students import classify_clickup_error
 from src.services.clickup_client import ClickUpAPIError, ClickUpNotFoundError, ClickUpTimeoutError
+from src.services.outbox_service import OutboxService
 # - Imports the core ORM model for schema and auditor test cases.
 # - Architectural Purpose: Verifies the production model mapping rather than a test duplicate.
 # - Plain-English: 'Test the real student database model.'
@@ -91,6 +93,18 @@ from starlette.requests import Request
 # - Architectural Purpose: Keeps regression checks runnable in CI with no external service dependencies.
 # - Plain-English: 'Collect the project's core behavior checks.'
 class CoreBehaviorTests(unittest.TestCase):
+    # Ensure the standalone publisher can release its queue transport during shutdown.
+    def test_outbox_service_closes_queue_client(self):
+        class QueueServiceStub:
+            closed = False
+
+            async def close(self):
+                self.closed = True
+
+        queue_service = QueueServiceStub()
+        asyncio.run(OutboxService(queue_service).close())
+        self.assertTrue(queue_service.closed)
+
     # Ensure recovery serializes the same id field and the worker accepts it.
     def test_recovery_messages_match_worker_queue_contract(self):
         recovery_message = serialize_provisioning_message(23)
