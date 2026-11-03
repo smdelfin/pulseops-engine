@@ -14,6 +14,7 @@ os.environ.setdefault("CLICKUP_WEBHOOK_SECRET", "clickup-secret")
 from src.api.webhooks import _verify_signature
 from src.models.student import Student
 from src.services.student_auditor import StudentAuditor
+from src.services.csm_allocator import CSMAllocator
 from src.domain.lifecycle import InvalidStudentTransition, StudentDomainEvent, StudentStatus, transition_status
 from src.models.messaging import InboxEvent, OutboxEvent
 from src.models.student_operations import OffboardingCase, PaymentEvent
@@ -63,6 +64,17 @@ class CoreBehaviorTests(unittest.TestCase):
         )
         result = StudentAuditor().evaluate_student(student)
         self.assertEqual(result["breach_type"], "STATUS_SLA")
+
+    def test_csm_allocator_prefers_least_loaded_and_breaks_ties(self):
+        selected = CSMAllocator.choose_least_loaded(
+            ["csm-b", "csm-a"],
+            {"csm-a": 2, "csm-b": 1},
+        )
+        self.assertEqual(selected, "csm-b")
+        self.assertEqual(
+            CSMAllocator.choose_least_loaded(["csm-b", "csm-a"], {}),
+            "csm-a",
+        )
 
     def test_webhook_signature_accepts_valid_digest(self):
         body = b'{"name":"Test Student"}'

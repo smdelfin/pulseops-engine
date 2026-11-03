@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     GHL_WEBHOOK_SECRET: str
     # Require the separate shared secret used to authenticate ClickUp webhook requests.
     CLICKUP_WEBHOOK_SECRET: str
+    # Accept a comma-separated pool of CSM identifiers for workload-aware onboarding assignment.
+    CSM_IDS: Optional[str] = None
 
     # Configure how Pydantic resolves values without scattering environment parsing across services.
     class Config:

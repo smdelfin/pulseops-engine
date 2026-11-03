@@ -22,6 +22,7 @@ from src.models.student_transition import StudentTransition
 from src.models.messaging import InboxEvent, OutboxEvent
 from src.services.outbox_service import OutboxService
 from src.models.student_operations import OffboardingCase, PaymentEvent
+from src.services.csm_allocator import CSMAllocator
 
 # Configure a useful default log level for local runs and container diagnostics.
 logging.basicConfig(level=logging.INFO)
@@ -33,6 +34,7 @@ app = FastAPI(title="PulseOps-Engine API")
 # Construct the queue facade once so handlers reuse its client configuration.
 queue_service = QueueService()
 outbox_service = OutboxService(queue_service)
+csm_allocator = CSMAllocator(settings.CSM_IDS.split(",")) if settings.CSM_IDS else None
 
 CLICKUP_STATUS_MAP = {
     "to do": StudentStatus.ONBOARDING_STARTED,
@@ -154,6 +156,11 @@ async def ghl_deal_won(request: Request):
                     name=payload.name,
                     ghl_contact_id=payload.ghl_contact_id,
                     cohort=payload.cohort,
+                    assigned_csm_id=(
+                        await csm_allocator.get_next_csm(session)
+                        if csm_allocator
+                        else None
+                    ),
                     status="queued",
                 )
                 # Stage the insert and force the database to allocate the primary key now.

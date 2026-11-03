@@ -19,6 +19,7 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 - **Payment and Offboarding Workflows**: Payment events are stored independently from student status, failed payments can mark a student at risk, and refund/cancellation events create auditable offboarding cases with durable workflow commands.
 - **Payment Idempotency**: Payment webhooks deduplicate both provider event IDs and provider payment IDs, preventing retries from creating duplicate payment records or repeated student transitions.
 - **Refund and Cancellation Handling**: Signed refund or cancellation webhooks move eligible students through the lifecycle state machine, create an open offboarding case, and enqueue follow-up work through the transactional outbox.
+- **Workload-Aware CSM Assignment**: New onboarding records can be assigned to the least-loaded configured CSM using active student counts, with deterministic tie-breaking for predictable operations.
 
 ## Tech Stack
 
@@ -40,6 +41,7 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 - `src/models/student_transition.py`: Durable audit history for student lifecycle changes.
 - `src/models/messaging.py`: Inbox and outbox persistence models for reliable event delivery.
 - `src/models/student_operations.py`: Payment-event and offboarding-case persistence models.
+- `src/services/csm_allocator.py`: Workload-aware CSM selection based on active assigned students.
 - `src/services/`: External API clients (ClickUp, Queue Service) and business logic.
 - `src/services/outbox_service.py`: Retryable publisher for pending PostgreSQL outbox events.
 - `src/tasks/`: Logic for data processing and orchestration.
@@ -89,6 +91,12 @@ The `students` table is the operational source of truth for onboarding and CSM w
    ```bash
    cp .env.example .env
    ```
+   To enable workload-aware CSM assignment for new onboarding records, add a
+   comma-separated owner pool to `.env`:
+   ```dotenv
+   CSM_IDS=csm-a,csm-b,csm-c
+   ```
+   If `CSM_IDS` is omitted, intake remains unassigned for manual routing.
 
 4. Database Migrations:
    <!-- Applying migrations creates or updates tables to the revision expected by the
@@ -124,6 +132,7 @@ python -m unittest discover -s tests -v
 - **Operations migration**: Revision `0006` adds payment-event and offboarding-case records.
 - **Payment webhook**: `POST /webhooks/payments/updated` validates the provider signature, records the payment independently, escalates failed or past-due payments to `at_risk`, and returns an idempotent duplicate response for retried events.
 - **Offboarding webhook**: `POST /webhooks/offboarding` accepts signed `refund` or `cancel` actions, transitions the student to `refunded` or `cancelled`, persists the reason and case state, and emits a durable offboarding command.
+- **CSM assignment**: Set `CSM_IDS=csm-a,csm-b` to enable least-loaded assignment for new GHL onboarding records; leave it unset to preserve unassigned intake behavior.
 - **Outbox operation**: Webhooks commit the student update and outbox command together; the publisher then retries pending commands with exponential backoff until Azure Queue accepts them.
 - **Dead-letter operation**: Messages that exceed the worker dequeue-attempt limit are copied to `student-provisioning-deadletter` for inspection and replay instead of being silently discarded.
 - **Lifecycle behavior**: Invalid status changes are rejected, while supported ClickUp statuses are normalized into internal lifecycle states before persistence.
@@ -151,3 +160,10 @@ python -m unittest discover -s tests -v
 3. The payment record is committed separately from the student aggregate so financial history remains auditable.
 4. Failed, past-due, or declined payments request an `at_risk` lifecycle transition; invalid transitions return a conflict rather than silently changing state.
 5. Refund and cancellation events create an `offboarding_cases` record, transition the student through `offboarding`, and enqueue a durable command for access revocation and final communication workflows.
+
+### Workload-aware assignment flow
+
+1. Configure eligible owners with the comma-separated `CSM_IDS` environment variable.
+2. During a new GHL onboarding transaction, count each configured CSM's active assigned students.
+3. Assign the student to the lowest workload; use the identifier as a stable tie-breaker when counts match.
+4. Exclude terminal records from the count so completed, refunded, and cancelled work does not distort current capacity.
