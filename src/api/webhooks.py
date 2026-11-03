@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 # Import SQLAlchemy's query builder for async, parameterized ORM lookups.
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 # Import shared settings, database sessions, the Student entity, and queue abstraction.
 from src.core.config import settings
@@ -50,6 +51,21 @@ CLICKUP_STATUS_MAP = {
 async def health():
     # Return a small success document used by Docker/Azure probes to test process liveness.
     return {"status": "ok"}
+
+
+@app.get("/ready")
+async def readiness():
+    # Open a short-lived session so readiness reflects the dependency used by request handlers.
+    async with SessionLocal() as session:
+        try:
+            # Execute a minimal round trip to prove the configured database is reachable.
+            await session.execute(select(1))
+        except SQLAlchemyError as exc:
+            # Return a non-success response so orchestrators keep traffic away from an unready instance.
+            logger.exception("Readiness database check failed")
+            raise HTTPException(status_code=503, detail="Database unavailable") from exc
+    # Report readiness only after the database dependency has answered successfully.
+    return {"status": "ready", "dependencies": {"database": "ok"}}
 
 
 # Define the strict input contract for a GoHighLevel deal-won event.

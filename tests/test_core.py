@@ -11,7 +11,7 @@ os.environ.setdefault("CLICKUP_DEFAULT_LIST_ID", "test-list")
 os.environ.setdefault("GHL_WEBHOOK_SECRET", "ghl-secret")
 os.environ.setdefault("CLICKUP_WEBHOOK_SECRET", "clickup-secret")
 
-from src.api.webhooks import _verify_signature
+from src.api.webhooks import _verify_signature, app
 from src.models.student import Student
 from src.services.student_auditor import StudentAuditor
 from src.services.csm_allocator import CSMAllocator
@@ -81,6 +81,11 @@ class CoreBehaviorTests(unittest.TestCase):
         payload = build_alert_payload("Subject", "Message", {"count": 2})
         self.assertEqual(payload["text"], "*Subject*\nMessage")
         self.assertEqual(payload["details"]["count"], 2)
+
+    def test_application_exposes_separate_liveness_and_readiness_probes(self):
+        routes = {route.path for route in app.routes}
+        self.assertIn("/health", routes)
+        self.assertIn("/ready", routes)
 
     def test_webhook_signature_accepts_valid_digest(self):
         body = b'{"name":"Test Student"}'

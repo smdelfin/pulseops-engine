@@ -21,6 +21,7 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 - **Refund and Cancellation Handling**: Signed refund or cancellation webhooks move eligible students through the lifecycle state machine, create an open offboarding case, and enqueue follow-up work through the transactional outbox.
 - **Workload-Aware CSM Assignment**: New onboarding records can be assigned to the least-loaded configured CSM using active student counts, with deterministic tie-breaking for predictable operations.
 - **Operational Alert Delivery**: Configured alert webhooks now receive structured engineering and CSM notifications with bounded HTTP timeouts and explicit delivery failures.
+- **Readiness Monitoring**: Separate liveness and readiness endpoints let container orchestrators restart unhealthy processes while keeping traffic away from instances that cannot reach PostgreSQL.
 
 ## Tech Stack
 
@@ -44,6 +45,7 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 - `src/models/student_operations.py`: Payment-event and offboarding-case persistence models.
 - `src/services/csm_allocator.py`: Workload-aware CSM selection based on active assigned students.
 - `src/services/alert_service.py`: Shared structured webhook delivery for operational and CSM alerts.
+- `src/api/webhooks.py`: Provides `/health` liveness and `/ready` database-readiness probes.
 - `src/services/`: External API clients (ClickUp, Queue Service) and business logic.
 - `src/services/outbox_service.py`: Retryable publisher for pending PostgreSQL outbox events.
 - `src/tasks/`: Logic for data processing and orchestration.
@@ -137,6 +139,7 @@ python -m unittest discover -s tests -v
 - **CSM assignment**: Set `CSM_IDS=csm-a,csm-b` to enable least-loaded assignment for new GHL onboarding records; leave it unset to preserve unassigned intake behavior.
 - **Alert delivery**: Set `ALERT_WEBHOOK_URL` for general alerts, or override with `CSM_ALERT_WEBHOOK_URL` and `ENG_ALERT_WEBHOOK_URL`; delivery failures are logged and raised for scheduler retry handling.
 - **Alert payloads**: Notifications use a provider-neutral `text` field plus a structured `details` object, allowing chat destinations and downstream automation to consume the same event context.
+- **Health probes**: `GET /health` checks process liveness only; `GET /ready` performs a PostgreSQL round trip and returns HTTP 503 when the database is unavailable.
 - **Outbox operation**: Webhooks commit the student update and outbox command together; the publisher then retries pending commands with exponential backoff until Azure Queue accepts them.
 - **Dead-letter operation**: Messages that exceed the worker dequeue-attempt limit are copied to `student-provisioning-deadletter` for inspection and replay instead of being silently discarded.
 - **Lifecycle behavior**: Invalid status changes are rejected, while supported ClickUp statuses are normalized into internal lifecycle states before persistence.
@@ -178,3 +181,19 @@ python -m unittest discover -s tests -v
 2. The service selects the specific channel override when configured, otherwise it uses `ALERT_WEBHOOK_URL`.
 3. The webhook request uses a five-second timeout so a slow notification provider cannot hang the event loop indefinitely.
 4. Non-success HTTP responses are logged and raised, allowing the surrounding scheduler or worker policy to retry or surface the failure.
+
+### Health and readiness flow
+
+1. The liveness probe calls `GET /health` to verify that the FastAPI process can serve requests.
+2. The readiness probe calls `GET /ready`, which executes `SELECT 1` through the application's async SQLAlchemy session factory.
+3. A successful dependency check returns `200` with database status metadata.
+4. A database connection failure returns `503`, allowing Docker, Azure, or another orchestrator to stop routing traffic until recovery.
+
+Check both endpoints locally after starting Docker Compose:
+
+```bash
+curl http://localhost:8000/health
+curl http://localhost:8000/ready
+```
+
+Use `/health` for container liveness/restart checks and `/ready` for load-balancer or deployment traffic gating.
