@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import os
 import unittest
+from pathlib import Path
 
 
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost/pulseops")
@@ -86,6 +87,11 @@ class CoreBehaviorTests(unittest.TestCase):
         routes = {route.path for route in app.routes}
         self.assertIn("/health", routes)
         self.assertIn("/ready", routes)
+
+    def test_compose_healthcheck_uses_readiness_probe(self):
+        compose = (Path(__file__).parents[1] / "docker-compose.yml").read_text()
+        self.assertIn("http://localhost:8000/ready", compose)
+        self.assertNotIn("curl -f http://localhost:8000/health", compose)
 
     def test_webhook_signature_accepts_valid_digest(self):
         body = b'{"name":"Test Student"}'

@@ -22,6 +22,7 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 - **Workload-Aware CSM Assignment**: New onboarding records can be assigned to the least-loaded configured CSM using active student counts, with deterministic tie-breaking for predictable operations.
 - **Operational Alert Delivery**: Configured alert webhooks now receive structured engineering and CSM notifications with bounded HTTP timeouts and explicit delivery failures.
 - **Readiness Monitoring**: Separate liveness and readiness endpoints let container orchestrators restart unhealthy processes while keeping traffic away from instances that cannot reach PostgreSQL.
+- **Compose Readiness Integration**: Docker Compose probes `/ready` with the Python runtime already included in the image, so container health tracks database-backed availability without relying on an undeclared `curl` package.
 
 ## Tech Stack
 
@@ -140,6 +141,7 @@ python -m unittest discover -s tests -v
 - **Alert delivery**: Set `ALERT_WEBHOOK_URL` for general alerts, or override with `CSM_ALERT_WEBHOOK_URL` and `ENG_ALERT_WEBHOOK_URL`; delivery failures are logged and raised for scheduler retry handling.
 - **Alert payloads**: Notifications use a provider-neutral `text` field plus a structured `details` object, allowing chat destinations and downstream automation to consume the same event context.
 - **Health probes**: `GET /health` checks process liveness only; `GET /ready` performs a PostgreSQL round trip and returns HTTP 503 when the database is unavailable.
+- **Compose healthcheck**: The web container calls `/ready` with Python's standard-library HTTP client; this keeps the image dependency set and deployment health contract aligned.
 - **Outbox operation**: Webhooks commit the student update and outbox command together; the publisher then retries pending commands with exponential backoff until Azure Queue accepts them.
 - **Dead-letter operation**: Messages that exceed the worker dequeue-attempt limit are copied to `student-provisioning-deadletter` for inspection and replay instead of being silently discarded.
 - **Lifecycle behavior**: Invalid status changes are rejected, while supported ClickUp statuses are normalized into internal lifecycle states before persistence.
@@ -197,3 +199,11 @@ curl http://localhost:8000/ready
 ```
 
 Use `/health` for container liveness/restart checks and `/ready` for load-balancer or deployment traffic gating.
+Docker Compose uses the same readiness contract for the web container:
+
+```bash
+docker compose ps
+docker inspect --format="{{json .State.Health}}" pulseops-engine-web-1
+```
+
+The container is healthy only when the Python-based check can receive a successful response from `/ready`; `/health` remains available for process-only diagnostics.

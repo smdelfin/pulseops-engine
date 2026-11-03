@@ -51,14 +51,14 @@ services:
 # - Architectural Purpose: High availability; ensures service recovers from crashes or reboots.
 # - Plain-English: 'If this crashes, try to start it back up automatically.'
     restart: unless-stopped
-# - Configures a probe to check the service's health periodically.
-# - Architectural Purpose: Monitoring and automated recovery (Self-healing infrastructure).
-# - Plain-English: 'Periodically ping the app to make sure it hasn't frozen.'
+# - Configures a dependency-aware probe to check the service's readiness periodically.
+# - Architectural Purpose: Monitoring and automated recovery only after PostgreSQL is reachable.
+# - Plain-English: 'Restart or withhold traffic when the app cannot reach its database.'
     healthcheck:
-# - The actual command run inside the container to verify health.
-# - Architectural Purpose: Probes the /health endpoint of the FastAPI app.
-# - Plain-English: 'When we ping it, it should return a success code.'
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+# - The actual command run inside the container to verify application and database readiness.
+# - Architectural Purpose: Uses Python already present in the image, avoiding an undeclared curl dependency.
+# - Plain-English: 'Ask the readiness endpoint whether the app can serve database-backed traffic.'
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=2)\""]
 # - Frequency of the health check.
 # - Architectural Purpose: Balances detection speed with overhead.
 # - Plain-English: 'Check the health every 10 seconds.'
