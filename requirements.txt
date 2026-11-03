@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+sqlalchemy[asyncio]
+asyncpg
+alembic
+pydantic-settings
+azure-storage-queue
+azure-identity
+requests
+python-dotenv
+httpx
