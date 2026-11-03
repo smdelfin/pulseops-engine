@@ -24,6 +24,18 @@ class Student(Base):
     clickup_list_id = Column(String, nullable=True)
     # Reference to the specific ClickUp task created for this student.
     clickup_task_id = Column(String, nullable=True)
+    # Program tier for SLA and behavior targeting (e.g., 'Enterprise', 'Standard', 'FastTrack').
+    program_type = Column(String, default="Standard", nullable=False)
+    # ID of the assigned Customer Success Manager (CSM).
+    assigned_csm_id = Column(String, nullable=True)
+    # Timestamp of the last meaningful touchpoint (DB update or API activity).
+    last_interaction_at = Column(DateTime, server_default=func.now(), nullable=True)
+    # Timestamp when the student entered their current status (used for SLA tracking).
+    sla_status_start_at = Column(DateTime, server_default=func.now(), nullable=True)
+    # Counter for manual follow-ups performed by staff.
+    follow_up_count = Column(Integer, default=0, nullable=False)
+    # Flag to pause automated worker processing for this record.
+    is_paused = Column(Boolean, default=False, nullable=False)
     # Automatically set on row creation using the database server-side clock.
     created_at = Column(DateTime, server_default=func.now())
     # Automatically updated on every row change to provide a last-modified signal.

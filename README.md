@@ -9,6 +9,7 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 - **Heartbeat Monitoring**: Added worker health tracking with periodic heartbeat logging to ensure continuous processing.
 - **Graceful Shutdown**: Implemented signal handling (SIGINT/SIGTERM) for clean worker termination without interrupting in-flight tasks.
 - **Fault Tolerance**: Added top-level crash logging, non-zero exit codes, and a failure threshold with automated alert dispatching for the provisioning worker.
+- **SLA & CSM Monitoring**: Integrated program-tier metadata, CSM attribution, and automated SLA tracking to monitor and flag at-risk students in real-time.
 
 ## Tech Stack
 
