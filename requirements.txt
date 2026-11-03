@@ -13,6 +13,8 @@ pydantic-settings
 # Client library for sending and receiving provisioning messages through Azure Queue.
 azure-storage-queue
 # Azure authentication helpers for credential-based service access.
+# Async transport used by Azure Storage Queue's aio client.
+aiohttp
 azure-identity
 # Synchronous HTTP client used by integrations that do not require async transport.
 requests

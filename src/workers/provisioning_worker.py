@@ -191,43 +191,61 @@ async def main_worker() -> None:
 
     # Announce readiness after queue initialization succeeds.
     logger.info("Provisioning worker started")
-            consecutive_failures = 0
-            MAX_FAILURE_THRESHOLD = 3
+    consecutive_failures = 0
+    max_failure_threshold = 3
+    last_heartbeat = time.time()
+    shutdown_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def request_shutdown() -> None:
+        # Set the event so the receive loop exits after its current batch.
+        shutdown_event.set()
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(signum, request_shutdown)
+        except NotImplementedError:
+            signal.signal(signum, lambda _signum, _frame: request_shutdown())
+
+    try:
+        while not shutdown_event.is_set():
+            received = False
             try:
-                while not shutdown_event.is_set():
-                    received = False
-                    try:
-                        async for message in queue_client.receive_messages(
-                            messages_per_page=10,
-                            visibility_timeout=120,
-                        ):
-                            received = True
-                            await process_message(message, queue_client)
-                        
-                        if received:
-                            consecutive_failures = 0
-                    except Exception as err:
-                        consecutive_failures += 1
-                        logger.error(f"Batch processing error: {err}")
-                        if consecutive_failures >= MAX_FAILURE_THRESHOLD:
-                            await send_alert(
-                                subject="Worker Failure Threshold Exceeded",
-                                message=f"Provisioning worker has failed {consecutive_failures} consecutive times.",
-                                details={"error": str(err)}
-                            )
-                            consecutive_failures = 0
-                    
-                    if not received:
-                        if time.time() - last_heartbeat > 60:
-                            logger.info("[Worker Heartbeat] Worker active and polling queue | PID: %s", os.getpid())
-                            last_heartbeat = time.time()
-                        try:
-                            await asyncio.wait_for(shutdown_event.wait(), timeout=2.0)
-                            break
-                        except asyncio.TimeoutError:
-                            continue
-            finally:
-                await queue_client.close()
+                async for message in queue_client.receive_messages(
+                    messages_per_page=10,
+                    visibility_timeout=120,
+                ):
+                    received = True
+                    await process_message(message, queue_client)
+
+                if received:
+                    consecutive_failures = 0
+            except Exception as err:
+                consecutive_failures += 1
+                logger.error("Batch processing error: %s", err, exc_info=True)
+                if consecutive_failures >= max_failure_threshold:
+                    await send_alert(
+                        subject="Worker Failure Threshold Exceeded",
+                        message=f"Provisioning worker has failed {consecutive_failures} consecutive times.",
+                        details={"error": str(err)}
+                    )
+                    consecutive_failures = 0
+
+            if not received:
+                if time.time() - last_heartbeat > 60:
+                    logger.info("[Worker Heartbeat] Worker active and polling queue | PID: %s", os.getpid())
+                    last_heartbeat = time.time()
+                try:
+                    await asyncio.wait_for(shutdown_event.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    continue
+    finally:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.remove_signal_handler(signum)
+            except (NotImplementedError, RuntimeError):
+                pass
+        await queue_client.close()
 
 
 if __name__ == "__main__":
