@@ -137,6 +137,14 @@ def _verify_signature(raw_body: bytes, received: str | None, secret: str) -> Non
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
 
+def _require_event_id(request: Request) -> str:
+    # Require the provider's stable identifier so retries can be deduplicated safely.
+    event_id = request.headers.get("X-Webhook-Event-Id")
+    if not event_id:
+        raise HTTPException(status_code=400, detail="Missing webhook event ID")
+    return event_id
+
+
 @app.post("/webhooks/ghl/deal-won")
 async def ghl_deal_won(request: Request):
     # Read raw bytes so signature verification covers precisely the transmitted payload.
@@ -300,7 +308,7 @@ async def payment_updated(request: Request):
     raw_body = await request.body()
     _verify_signature(raw_body, request.headers.get("X-Webhook-Signature"), settings.GHL_WEBHOOK_SECRET)
     payload = PaymentWebhook.model_validate_json(raw_body)
-    provider_event_id = request.headers.get("X-Webhook-Event-Id") or str(uuid4())
+    provider_event_id = _require_event_id(request)
 
     async with SessionLocal() as session:
         duplicate = await session.scalar(
@@ -371,7 +379,7 @@ async def offboarding_updated(request: Request):
     raw_body = await request.body()
     _verify_signature(raw_body, request.headers.get("X-Webhook-Signature"), settings.GHL_WEBHOOK_SECRET)
     payload = OffboardingWebhook.model_validate_json(raw_body)
-    provider_event_id = request.headers.get("X-Webhook-Event-Id") or str(uuid4())
+    provider_event_id = _require_event_id(request)
     target_status = StudentStatus.REFUNDED if payload.action == "refund" else StudentStatus.CANCELLED
 
     async with SessionLocal() as session:

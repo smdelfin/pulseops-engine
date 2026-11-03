@@ -12,7 +12,7 @@ os.environ.setdefault("CLICKUP_DEFAULT_LIST_ID", "test-list")
 os.environ.setdefault("GHL_WEBHOOK_SECRET", "ghl-secret")
 os.environ.setdefault("CLICKUP_WEBHOOK_SECRET", "clickup-secret")
 
-from src.api.webhooks import _verify_signature, app
+from src.api.webhooks import _require_event_id, _verify_signature, app
 from src.models.student import Student
 from src.services.student_auditor import StudentAuditor
 from src.services.csm_allocator import CSMAllocator
@@ -21,6 +21,7 @@ from src.domain.lifecycle import InvalidStudentTransition, StudentDomainEvent, S
 from src.models.messaging import InboxEvent, OutboxEvent
 from src.models.student_operations import OffboardingCase, PaymentEvent
 from fastapi import HTTPException
+from starlette.requests import Request
 
 
 class CoreBehaviorTests(unittest.TestCase):
@@ -109,6 +110,18 @@ class CoreBehaviorTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as raised:
             _verify_signature(b"body", "sha256=invalid", "secret")
         self.assertEqual(raised.exception.status_code, 401)
+
+    def test_financial_webhooks_require_stable_event_ids(self):
+        missing_id = Request({"type": "http", "headers": []})
+        with self.assertRaises(HTTPException) as raised:
+            _require_event_id(missing_id)
+        self.assertEqual(raised.exception.status_code, 400)
+
+        with_id = Request({
+            "type": "http",
+            "headers": [(b"x-webhook-event-id", b"provider-event-1")],
+        })
+        self.assertEqual(_require_event_id(with_id), "provider-event-1")
 
 
 if __name__ == "__main__":
