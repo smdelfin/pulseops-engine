@@ -4,7 +4,7 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 
 ## Latest Change
 
-The latest release adds migration `0007`, which enforces payment integrity directly in PostgreSQL. Payment records now accept only supported statuses, reject negative amounts and lowercase currency codes, and include a status/time index for operational queries. The ORM constraints, regression tests, CI migration checks, and deployment documentation all reflect these rules.
+The latest release adds migration `0007`, which enforces payment integrity directly in PostgreSQL. Payment records now accept only supported statuses, reject negative amounts and lowercase currency codes, and include a status/time index for operational queries. The API also trims, validates, and canonicalizes three-letter currency codes to uppercase before persistence, preventing valid provider casing from conflicting with the database invariant.
 
 ## Features
 
@@ -32,6 +32,8 @@ The latest release adds migration `0007`, which enforces payment integrity direc
 - **Auditable Offboarding Transitions**: Offboarding records both entry into `offboarding` and the final `refunded` or `cancelled` state, correlating both history entries to the provider event ID.
 - **Normalized Payment States**: Payment webhook statuses are trimmed, lowercased, and checked against an explicit allowlist before persistence or outbox publication.
 - **Database Payment Invariants**: Migration `0007` mirrors payment status validation in PostgreSQL, rejects negative amounts and lowercase currency codes, and indexes payment status/time queries.
+- **Canonical Payment Currencies**: Payment webhooks trim and uppercase three-letter currency codes, rejecting malformed values before database access.
+- **Currency Validation Coverage**: Regression tests verify normalization of padded lowercase currency values and rejection of malformed currency codes.
 
 ## Tech Stack
 

@@ -143,14 +143,24 @@ class CoreBehaviorTests(unittest.TestCase):
             "provider": "stripe",
             "provider_payment_id": "pay-1",
             "status": " PAID ",
+            "currency": " usd ",
         })
         self.assertEqual(payload.status, "paid")
+        self.assertEqual(payload.currency, "USD")
         with self.assertRaises(ValueError):
             PaymentWebhook.model_validate({
                 "ghl_contact_id": "ghl-1",
                 "provider": "stripe",
                 "provider_payment_id": "pay-2",
                 "status": "mystery",
+            })
+        with self.assertRaises(ValueError):
+            PaymentWebhook.model_validate({
+                "ghl_contact_id": "ghl-1",
+                "provider": "stripe",
+                "provider_payment_id": "pay-3",
+                "status": "paid",
+                "currency": "US1",
             })
 
 

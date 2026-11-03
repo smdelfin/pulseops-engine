@@ -135,6 +135,16 @@ class PaymentWebhook(BaseModel):
             raise ValueError(f"Unsupported payment status: {value}")
         return normalized
 
+    @field_validator("currency", mode="before")
+    @classmethod
+    def normalize_currency(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        if len(normalized) != 3 or not normalized.isalpha():
+            raise ValueError("Currency must be a three-letter ISO-style code")
+        return normalized
+
 
 class OffboardingWebhook(BaseModel):
     model_config = ConfigDict(extra="forbid")
