@@ -57,6 +57,14 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertIn("access_revoked", OffboardingCase.__table__.columns)
         self.assertIn("final_communication_sent", OffboardingCase.__table__.columns)
 
+    def test_payment_model_enforces_database_invariants(self):
+        constraint_names = {constraint.name for constraint in PaymentEvent.__table__.constraints}
+        index_names = {index.name for index in PaymentEvent.__table__.indexes}
+        self.assertIn("ck_payment_events_status", constraint_names)
+        self.assertIn("ck_payment_events_amount", constraint_names)
+        self.assertIn("ck_payment_events_currency_upper", constraint_names)
+        self.assertIn("ix_payment_events_status_occurred_at", index_names)
+
     def test_auditor_flags_status_sla_breach(self):
         student = Student(
             id=1,

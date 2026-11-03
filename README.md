@@ -27,6 +27,7 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 - **Strict Financial Webhook Idempotency**: Payment and offboarding webhooks require the provider's stable event ID instead of inventing a random fallback that would make retries impossible to deduplicate.
 - **Auditable Offboarding Transitions**: Offboarding records both entry into `offboarding` and the final `refunded` or `cancelled` state, correlating both history entries to the provider event ID.
 - **Normalized Payment States**: Payment webhook statuses are trimmed, lowercased, and checked against an explicit allowlist before persistence or outbox publication.
+- **Database Payment Invariants**: Migration `0007` mirrors payment status validation in PostgreSQL, rejects negative amounts and lowercase currency codes, and indexes payment status/time queries.
 
 ## Tech Stack
 
@@ -114,7 +115,7 @@ The `students` table is the operational source of truth for onboarding and CSM w
    ```bash
    alembic upgrade head
    ```
-   This applies revisions `0001` through `0006`, including lifecycle history, schema-hardening constraints, durable messaging, and payment/offboarding workflows.
+   This applies revisions `0001` through `0007`, including lifecycle history, schema-hardening constraints, durable messaging, payment/offboarding workflows, and payment invariants.
 
 5. Run the Application:
    <!-- Compose supplies local service wiring and starts the API with supporting
@@ -143,13 +144,14 @@ alembic history
 docker compose config --quiet
 ```
 
-The migration output should show one head at `0006`; Compose configuration requires
+The migration output should show one head at `0007`; Compose configuration requires
 the CI-safe values from `.env.example` or an equivalent `.env` file.
 
 - **Lifecycle migration**: Apply revision `0003` with `alembic upgrade head` to create the `student_transitions` audit table.
 - **Schema hardening migration**: Revision `0004` adds cohort data, operational indexes, and database constraints for the student record.
 - **Messaging migration**: Revision `0005` adds inbox deduplication and retryable outbox records.
 - **Operations migration**: Revision `0006` adds payment-event and offboarding-case records.
+- **Payment hardening migration**: Revision `0007` adds database checks for supported statuses, non-negative amounts, uppercase currencies, and an operational status/time index.
 - **Payment webhook**: `POST /webhooks/payments/updated` validates the provider signature, records the payment independently, escalates failed or past-due payments to `at_risk`, and returns an idempotent duplicate response for retried events.
 - **Offboarding webhook**: `POST /webhooks/offboarding` accepts signed `refund` or `cancel` actions, transitions the student to `refunded` or `cancelled`, persists the reason and case state, and emits a durable offboarding command.
 - **Financial event IDs**: Payment and offboarding requests must include `X-Webhook-Event-Id`; missing identifiers return HTTP 400 before any database mutation.
@@ -161,8 +163,8 @@ the CI-safe values from `.env.example` or an equivalent `.env` file.
 - **Alert payloads**: Notifications use a provider-neutral `text` field plus a structured `details` object, allowing chat destinations and downstream automation to consume the same event context.
 - **Health probes**: `GET /health` checks process liveness only; `GET /ready` performs a PostgreSQL round trip and returns HTTP 503 when the database is unavailable.
 - **Compose healthcheck**: The web container calls `/ready` with Python's standard-library HTTP client; this keeps the image dependency set and deployment health contract aligned.
-- **CI deployment checks**: GitHub Actions confirms revision `0006` is the current migration head and runs `docker compose config --quiet` with safe CI-only environment values.
-- **Migration graph**: The initial migration is revision `0001`, followed linearly through `0006`; CI fails if a revision reference is missing or multiple heads are introduced.
+- **CI deployment checks**: GitHub Actions confirms revision `0007` is the current migration head and runs `docker compose config --quiet` with safe CI-only environment values.
+- **Migration graph**: The initial migration is revision `0001`, followed linearly through `0007`; CI fails if a revision reference is missing or multiple heads are introduced.
 - **Outbox operation**: Webhooks commit the student update and outbox command together; the publisher then retries pending commands with exponential backoff until Azure Queue accepts them.
 - **Dead-letter operation**: Messages that exceed the worker dequeue-attempt limit are copied to `student-provisioning-deadletter` for inspection and replay instead of being silently discarded.
 - **Lifecycle behavior**: Invalid status changes are rejected, while supported ClickUp statuses are normalized into internal lifecycle states before persistence.

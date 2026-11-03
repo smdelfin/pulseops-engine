@@ -35,8 +35,8 @@ jobs:
           GHL_WEBHOOK_SECRET: ci-ghl-secret
           CLICKUP_WEBHOOK_SECRET: ci-clickup-secret
         run: |
-          test "$(alembic heads | grep -c '0006')" -eq 1
-          test "$(alembic history | grep -c '0005 -> 0006')" -eq 1
+          test "$(alembic heads | grep -c '0007')" -eq 1
+          test "$(alembic history | grep -c '0006 -> 0007')" -eq 1
 
       - name: Validate Docker Compose configuration
         env:

@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.sql import func
 
 from src.core.db import Base
@@ -8,6 +8,17 @@ class PaymentEvent(Base):
     __tablename__ = "payment_events"
     __table_args__ = (
         UniqueConstraint("provider", "provider_payment_id", name="uq_payment_provider_id"),
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'succeeded', 'paid', 'failed', "
+            "'past_due', 'declined', 'refunded', 'cancelled')",
+            name="ck_payment_events_status",
+        ),
+        CheckConstraint("amount IS NULL OR amount >= 0", name="ck_payment_events_amount"),
+        CheckConstraint(
+            "currency IS NULL OR currency = upper(currency)",
+            name="ck_payment_events_currency_upper",
+        ),
+        Index("ix_payment_events_status_occurred_at", "status", "occurred_at"),
     )
 
     id = Column(Integer, primary_key=True)
