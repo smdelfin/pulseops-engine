@@ -23,7 +23,6 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 ## Project Structure
 
 - `ARCHITECTURE.md`: High-level system architecture and component breakdown.
-- `ARCHITECTURE.md`: High-level system architecture and component breakdown.
 - `src/api/`: API routes and webhook endpoints.
 - `src/core/`: Configuration, database setup, and core logic.
 - `src/models/`: Database models (e.g., Student).
