@@ -4,6 +4,7 @@ from sqlalchemy import Boolean, Column, Integer, String, Float, DateTime
 from sqlalchemy.sql import func
 # Import the shared declarative base so this model participates in application metadata and migrations.
 from src.core.db import Base
+from src.domain.lifecycle import StudentStatus
 
 # Define the ORM entity representing one student moving through the provisioning pipeline.
 class Student(Base):
@@ -19,7 +20,7 @@ class Student(Base):
     # Persist the optional readiness score used by operational prioritization.
     health_score = Column(Integer, default=100)
     # Track the workflow state shared by webhooks, workers, and reconciliation jobs.
-    status = Column(String, default="pending", nullable=False)
+    status = Column(String, default=StudentStatus.PENDING.value, nullable=False)
     # Retain the external ClickUp list identifier for reconciliation and support.
     clickup_list_id = Column(String, nullable=True)
     # Retain the external ClickUp task identifier so provisioning can be retried safely.

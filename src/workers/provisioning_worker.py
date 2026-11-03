@@ -24,6 +24,8 @@ from src.core.config import settings
 from src.core.db import SessionLocal
 from src.models.student import Student
 from src.services.clickup_client import ClickUpClient
+from src.domain.lifecycle import InvalidStudentTransition, StudentDomainEvent, StudentStatus, transition_status
+from src.models.student_transition import StudentTransition
 
 
 # Configure timestamped logs suitable for container stdout collection.
@@ -137,7 +139,18 @@ async def process_message(message, queue_client: QueueClient) -> None:
                 # Persist the provider identifier before marking the local workflow complete.
                 student.clickup_task_id = task_data["id"]
                 # Mark completion only after ClickUp confirms task creation.
-                student.status = "completed"
+                previous_status = student.status
+                student.status = transition_status(previous_status, StudentStatus.COMPLETED).value
+                session.add(StudentTransition(
+                    student_id=student.id,
+                    from_status=previous_status,
+                    to_status=student.status,
+                    event_type=StudentDomainEvent(
+                        event_type="student.provisioned",
+                        aggregate_id=student.id,
+                        payload={"clickup_task_id": student.clickup_task_id},
+                    ).event_type,
+                ))
                 # Commit the external-success checkpoint so reruns remain idempotent.
                 await session.commit()
                 logger.info(
@@ -150,7 +163,7 @@ async def process_message(message, queue_client: QueueClient) -> None:
                 await session.execute(
                     update(Student)
                     .where(Student.id == student_id, Student.status == "processing")
-                    .values(status="queued")
+                    .values(status=StudentStatus.QUEUED.value)
                 )
                 # Persist the queued state so a later queue delivery can retry provisioning.
                 await session.commit()

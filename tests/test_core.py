@@ -14,10 +14,20 @@ os.environ.setdefault("CLICKUP_WEBHOOK_SECRET", "clickup-secret")
 from src.api.webhooks import _verify_signature
 from src.models.student import Student
 from src.services.student_auditor import StudentAuditor
+from src.domain.lifecycle import InvalidStudentTransition, StudentDomainEvent, StudentStatus, transition_status
 from fastapi import HTTPException
 
 
 class CoreBehaviorTests(unittest.TestCase):
+    def test_lifecycle_rejects_invalid_transition(self):
+        with self.assertRaises(InvalidStudentTransition):
+            transition_status(StudentStatus.COMPLETED, StudentStatus.QUEUED)
+
+    def test_domain_event_has_stable_envelope(self):
+        event = StudentDomainEvent("student.queued", 7, {"source": "test"})
+        self.assertEqual(event.as_dict()["aggregate_id"], 7)
+        self.assertEqual(event.as_dict()["event_type"], "student.queued")
+
     def test_student_model_contains_pause_flag(self):
         self.assertIn("is_paused", Student.__table__.columns)
         self.assertFalse(Student.__table__.c.is_paused.nullable)

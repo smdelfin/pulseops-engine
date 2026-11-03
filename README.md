@@ -13,6 +13,7 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 - **Canonical Provisioning Worker**: The provisioning worker now owns queue consumption, atomically claims pending students, handles transient database lock conflicts, supports graceful SIGINT/SIGTERM shutdown, and closes Azure Queue resources cleanly.
 - **Regression Coverage**: Added unit tests for the Student ORM model, SLA evaluation, and webhook signature validation.
 - **Continuous Integration**: GitHub Actions compiles the Python sources and runs the unit test suite on pushes to `main` and pull requests.
+- **Explicit Lifecycle Contracts**: Student status transitions are validated through a typed state machine, recorded in `student_transitions`, and represented by stable domain-event envelopes.
 
 ## Tech Stack
 
@@ -29,7 +30,9 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 - `ARCHITECTURE.md`: High-level system architecture and component breakdown.
 - `src/api/`: API routes and webhook endpoints.
 - `src/core/`: Configuration, database setup, and core logic.
+- `src/domain/`: Typed lifecycle states, transition rules, and domain-event contracts.
 - `src/models/`: Database models (e.g., Student).
+- `src/models/student_transition.py`: Durable audit history for student lifecycle changes.
 - `src/services/`: External API clients (ClickUp, Queue Service) and business logic.
 - `src/tasks/`: Logic for data processing and orchestration.
 - `src/workers/`: Canonical background worker execution loop with queue retries and graceful shutdown.
@@ -95,6 +98,8 @@ python -m compileall -q src migrations scripts tests
 python -m unittest discover -s tests -v
 ```
 
+- **Lifecycle migration**: Apply revision `0003` with `alembic upgrade head` to create the `student_transitions` audit table.
+- **Lifecycle behavior**: Invalid status changes are rejected, while supported ClickUp statuses are normalized into internal lifecycle states before persistence.
 - **Webhooks**: Use the `scripts/simulate_*.py` scripts to test incoming webhook payloads.
 - **Seeding**: Use `scripts/seed_clickup_students.py` to populate the database with initial data.
 - **Worker**: Run the worker manually for testing using `scripts/run_worker.py`.

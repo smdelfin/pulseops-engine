@@ -16,6 +16,8 @@ from src.core.config import settings
 from src.core.db import SessionLocal
 from src.models.student import Student
 from src.services.queue_service import QueueService
+from src.domain.lifecycle import InvalidStudentTransition, StudentDomainEvent, StudentStatus, transition_status
+from src.models.student_transition import StudentTransition
 
 # Configure a useful default log level for local runs and container diagnostics.
 logging.basicConfig(level=logging.INFO)
@@ -26,6 +28,15 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="PulseOps-Engine API")
 # Construct the queue facade once so handlers reuse its client configuration.
 queue_service = QueueService()
+
+CLICKUP_STATUS_MAP = {
+    "to do": StudentStatus.ONBOARDING_STARTED,
+    "open": StudentStatus.ONBOARDING_STARTED,
+    "in progress": StudentStatus.ONBOARDING_STARTED,
+    "complete": StudentStatus.COMPLETED,
+    "completed": StudentStatus.COMPLETED,
+    "closed": StudentStatus.COMPLETED,
+}
 
 
 @app.get("/health")
@@ -113,13 +124,33 @@ async def ghl_deal_won(request: Request):
                 # Stage the insert and force the database to allocate the primary key now.
                 session.add(student)
                 await session.flush()
+                session.add(StudentTransition(
+                    student_id=student.id,
+                    from_status=None,
+                    to_status=StudentStatus.QUEUED.value,
+                    event_type=StudentDomainEvent(
+                        event_type="student.queued",
+                        aggregate_id=student.id,
+                        payload={"source": "ghl.deal-won"},
+                    ).event_type,
+                ))
             elif student.clickup_task_id or student.status in {"queued", "processing", "completed"}:
                 # Roll back the read transaction and report an idempotent duplicate response.
                 await session.rollback()
                 return {"status": "duplicate", "student_id": student.id}
             else:
                 # Reopen an existing incomplete record for another provisioning attempt.
-                student.status = "queued"
+                try:
+                    target_status = transition_status(student.status, StudentStatus.QUEUED)
+                except InvalidStudentTransition as exc:
+                    raise HTTPException(status_code=409, detail=str(exc)) from exc
+                session.add(StudentTransition(
+                    student_id=student.id,
+                    from_status=student.status,
+                    to_status=target_status.value,
+                    event_type="student.queued",
+                ))
+                student.status = target_status.value
 
             # Commit the source-of-truth state before enqueueing work.
             await session.commit()
@@ -142,7 +173,7 @@ async def ghl_deal_won(request: Request):
             queued_student = result.scalar_one_or_none()
             if queued_student and not queued_student.clickup_task_id:
                 # Mark the record pending so recovery tooling can safely requeue it.
-                queued_student.status = "pending"
+                queued_student.status = StudentStatus.PENDING.value
                 await session.commit()
         # Preserve the original infrastructure error in logs while returning a stable API response.
         logger.exception("Failed to enqueue student provisioning")
@@ -165,7 +196,7 @@ async def clickup_task_updated(request: Request):
     # Parse the event into a tolerant provider-specific schema.
     payload = ClickUpWebhook.model_validate_json(raw_body)
     # Locate the first history entry that represents a status transition.
-    new_status = next(
+    provider_status = next(
         (
             item.after.get("status")
             for item in payload.history_items
@@ -174,8 +205,11 @@ async def clickup_task_updated(request: Request):
         None,
     )
     # Ignore updates that do not alter workflow status.
-    if not new_status:
+    if not provider_status:
         return {"status": "ignored", "reason": "non-status update"}
+    new_status = CLICKUP_STATUS_MAP.get(str(provider_status).strip().lower())
+    if not new_status:
+        return {"status": "ignored", "reason": "unsupported status"}
 
     # Lock the matching student row while synchronizing its status.
     async with SessionLocal() as session:
@@ -188,8 +222,18 @@ async def clickup_task_updated(request: Request):
             # Treat unrelated ClickUp tasks as harmless integration noise.
             return {"status": "ignored", "reason": "task not tracked"}
         # Mirror the provider status in the local workflow source of truth.
-        student.status = new_status
+        try:
+            target_status = transition_status(student.status, new_status)
+        except InvalidStudentTransition as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        session.add(StudentTransition(
+            student_id=student.id,
+            from_status=student.status,
+            to_status=target_status.value,
+            event_type="student.status-synchronized",
+        ))
+        student.status = target_status.value
         # Commit the synchronization atomically.
         await session.commit()
     # Tell the caller which task and status were applied.
-    return {"status": "synchronized", "task_id": payload.task_id, "new_status": new_status}
+    return {"status": "synchronized", "task_id": payload.task_id, "new_status": target_status.value}
