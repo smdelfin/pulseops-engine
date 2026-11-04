@@ -4,7 +4,7 @@ PulseOps-Engine is a backend service designed to manage student enrollment pipel
 
 ## Latest Change
 
-The latest change adds an independent outbox publisher so pending database events continue retrying without waiting for another webhook. The publisher runs as a dedicated Docker Compose service, polls every five seconds, and handles up to 50 due events per batch while skipping rows locked by other publishers. Failed deliveries remain durable and use capped exponential retry delays; the publisher also closes its queue client on graceful shutdown.
+The latest change adds cohort, health-band, and `high-ticket` tags to ClickUp demo and worker-created tasks. The demo seeder also fills any missing tags on existing sample tasks, so rerunning it updates the current ClickUp demo list without duplicating student tasks.
 
 ## Features
 
@@ -37,6 +37,8 @@ The latest change adds an independent outbox publisher so pending database event
 - **Recovery Queue Contract**: The provisioning worker and recovery script share a strict message schema containing the positive student `id`, preventing incompatible recovery messages from being silently discarded.
 - **Conservative Reconciliation**: Reconciliation is read-only unless `--fix` is specified; it only requeues eligible students after ClickUp confirms the referenced task is missing with HTTP 404. It locks and revalidates the current status and task reference before repair, and writes the student update and retry intent transactionally through the outbox. Missing task references and ClickUp authorization, rate-limit, server, or network errors are reported without changing student state.
 - **Independent Outbox Dispatch**: A dedicated publisher polls PostgreSQL for due outbox events and retries Azure Queue delivery independently of webhook traffic; Docker Compose runs it as a separate restartable service.
+- **End-to-End Demo Seeding**: The demo seeder creates idempotent synthetic students, audit history, and provisioning requests in PostgreSQL; the regular worker creates their ClickUp tasks with current model details.
+- **ClickUp Operational Tags**: Both demo and worker-created tasks use normalized cohort tags plus health-band tags (`health-green`, `health-amber`, or `health-red`) and `high-ticket` for filtering and list-view scanning.
 
 ## Tech Stack
 
@@ -167,7 +169,7 @@ the CI-safe values from `.env.example` or an equivalent `.env` file.
 - **Payment status validation**: Supported statuses are `pending`, `processing`, `succeeded`, `paid`, `failed`, `past_due`, `declined`, `refunded`, and `cancelled`; unsupported values are rejected before database access.
 - **Payment status normalization**: Values are trimmed and lowercased before validation, so provider casing or surrounding whitespace cannot create inconsistent stored states or outbox event names.
 - **Offboarding audit history**: Each accepted offboarding event records the intermediate and terminal lifecycle transitions with the same provider-event correlation ID.
-- **CSM assignment**: Set `CSM_IDS=csm-a,csm-b` to enable least-loaded assignment for new GHL onboarding records; leave it unset to preserve unassigned intake behavior.
+- **CSM assignment**: Set `CSM_IDS=12345,67890` to enable least-loaded assignment for new GHL onboarding records using numeric ClickUp user IDs; leave it unset to preserve unassigned intake behavior.
 - **Alert delivery**: Set `ALERT_WEBHOOK_URL` for general alerts, or override with `CSM_ALERT_WEBHOOK_URL` and `ENG_ALERT_WEBHOOK_URL`; delivery failures are logged and raised for scheduler retry handling.
 - **Alert payloads**: Notifications use a provider-neutral `text` field plus a structured `details` object, allowing chat destinations and downstream automation to consume the same event context.
 - **Health probes**: `GET /health` checks process liveness only; `GET /ready` performs a PostgreSQL round trip and returns HTTP 503 when the database is unavailable.
@@ -179,7 +181,8 @@ the CI-safe values from `.env.example` or an equivalent `.env` file.
 - **Dead-letter operation**: Messages that exceed the worker dequeue-attempt limit are copied to `student-provisioning-deadletter` for inspection and replay instead of being silently discarded.
 - **Lifecycle behavior**: Invalid status changes are rejected, while supported ClickUp statuses are normalized into internal lifecycle states before persistence.
 - **Webhooks**: Use the `scripts/simulate_*.py` scripts to test incoming webhook payloads.
-- **Seeding**: Use `scripts/seed_clickup_students.py` to populate the database with initial data.
+- **Demo seeding**: Run `python scripts/seed_clickup_students.py` to preview ten synthetic students. Add `--apply` to insert only missing records into PostgreSQL and stage provisioning requests; keep the outbox publisher and provisioning worker running for the integrated workflow. Add `--clickup-only` to create missing sample tasks directly in the configured ClickUp list when the local PostgreSQL/Azure stack is unavailable; this mode does not create database records. Existing ClickUp demo tasks receive any missing cohort, health-band, and `high-ticket` tags on rerun. Set `CSM_IDS` to numeric ClickUp user IDs to enable workload-aware assignment and integrated ClickUp task ownership.
+- **Demo operations work**: Run `python scripts/seed_clickup_students.py --work-items` to preview four student-linked ClickUp cards (onboarding checklist, CSM follow-up, simulated payment exception, and simulated offboarding). Seed students first with `--clickup-only`; then add `--apply` to `--work-items` to create the cards. The work-item seeder is idempotent and adds task-type/cohort/health tags. Set `CLICKUP_DEMO_OPERATIONS_LIST_ID` to place these cards in a separate operations list; otherwise they share `CLICKUP_DEFAULT_LIST_ID`. All examples are labeled `DEMO ONLY` and do not issue refunds, change billing, or revoke access.
 - **Worker**: Run the worker manually for testing using `scripts/run_worker.py`.
 - **Outbox publisher**: Run `python src/workers/outbox_publisher.py` to independently poll and publish pending outbox events; Docker Compose starts this process as `outbox-publisher`.
 - **Worker compatibility**: `src/tasks/processor.py` delegates to the canonical provisioning worker so there is one queue-processing implementation.

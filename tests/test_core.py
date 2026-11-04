@@ -2,8 +2,10 @@
 # - Architectural Purpose: Exercises the same standard-library cryptography used at the API boundary.
 # - Plain-English: 'Create realistic signed test requests without contacting a provider.'
 import asyncio
+from contextlib import redirect_stdout
 import hashlib
 import hmac
+import io
 # - Imports environment access to configure required settings before application imports.
 # - Architectural Purpose: Settings are instantiated at import time, so test configuration must come first.
 # - Plain-English: 'Set up the test process environment before loading the app.'
@@ -16,6 +18,7 @@ import unittest
 # - Architectural Purpose: Locates project files independent of the current working directory.
 # - Plain-English: 'Build reliable paths to files that tests inspect.'
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 
 # - Supplies a local async database URL only when the caller has not already configured one.
@@ -48,9 +51,21 @@ os.environ.setdefault("CLICKUP_WEBHOOK_SECRET", "clickup-secret")
 # - Plain-English: 'Load the actual API components the tests verify.'
 from src.api.webhooks import PaymentWebhook, _require_event_id, _verify_signature, app
 from src.domain.provisioning import parse_provisioning_message, serialize_provisioning_message
+from src.domain.student_tags import build_student_tags
 from scripts.reconcile_students import classify_clickup_error
-from src.services.clickup_client import ClickUpAPIError, ClickUpNotFoundError, ClickUpTimeoutError
+from src.services.clickup_client import (
+    ClickUpAPIError,
+    ClickUpClient,
+    ClickUpNotFoundError,
+    ClickUpTimeoutError,
+)
 from src.services.outbox_service import OutboxService
+from scripts.seed_clickup_students import (
+    DEMO_STUDENTS,
+    DEMO_WORK_ITEMS,
+    run_seed,
+    seed_demo_students,
+)
 # - Imports the core ORM model for schema and auditor test cases.
 # - Architectural Purpose: Verifies the production model mapping rather than a test duplicate.
 # - Plain-English: 'Test the real student database model.'
@@ -93,6 +108,98 @@ from starlette.requests import Request
 # - Architectural Purpose: Keeps regression checks runnable in CI with no external service dependencies.
 # - Plain-English: 'Collect the project's core behavior checks.'
 class CoreBehaviorTests(unittest.TestCase):
+    # Ensure demo fixtures use current Student columns and stable idempotency keys.
+    def test_demo_seed_records_match_student_model(self):
+        student_columns = set(Student.__table__.columns.keys())
+        supported_fields = {
+            "name",
+            "ghl_contact_id",
+            "health_score",
+            "program_type",
+            "cohort",
+            "follow_up_count",
+        }
+        self.assertTrue(all(supported_fields <= set(record) for record in DEMO_STUDENTS))
+        self.assertTrue(supported_fields <= student_columns)
+        contact_ids = [record["ghl_contact_id"] for record in DEMO_STUDENTS]
+        self.assertEqual(len(contact_ids), len(set(contact_ids)))
+        self.assertTrue(all(0 <= record["health_score"] <= 100 for record in DEMO_STUDENTS))
+
+    # Ensure default demo-seed mode prints a preview without opening a database session.
+    def test_demo_seed_preview_is_read_only(self):
+        self.assertEqual(asyncio.run(seed_demo_students(apply=False)), 0)
+
+    # Ensure work-item fixtures cover the intended operational examples without real side effects.
+    def test_demo_work_items_are_linked_and_explicitly_simulated(self):
+        self.assertEqual(
+            {item["kind"] for item in DEMO_WORK_ITEMS},
+            {"onboarding", "csm-follow-up", "payment-exception", "offboarding"},
+        )
+        self.assertTrue(all(item["student_name"] in {
+            student["name"] for student in DEMO_STUDENTS
+        } for item in DEMO_WORK_ITEMS))
+        self.assertTrue(all(item["actions"] for item in DEMO_WORK_ITEMS))
+
+    # Ensure work-item mode previews by default and cannot make ClickUp requests accidentally.
+    def test_demo_work_item_preview_does_not_call_clickup(self):
+        output = io.StringIO()
+        with patch(
+            "scripts.seed_clickup_students.seed_clickup_work_items",
+            new_callable=AsyncMock,
+        ) as seed_work_items:
+            with redirect_stdout(output):
+                asyncio.run(run_seed(apply=False, clickup_only=False, work_items=True))
+        seed_work_items.assert_not_awaited()
+        self.assertIn("Preview only", output.getvalue())
+        self.assertIn("Offboarding Case", output.getvalue())
+
+    # Ensure ClickUp task creation uses its list-scoped endpoint and valid assignee shape.
+    def test_clickup_task_creation_uses_list_and_numeric_assignee(self):
+        client = ClickUpClient()
+        client._request_with_retry = AsyncMock(return_value={"id": "task-1"})
+
+        asyncio.run(client.create_task(
+            list_id="list-123",
+            task_name="Student: Demo",
+            description="Student operations",
+            assignee_id="456",
+            student_id="7",
+            ghl_contact_id="demo-pulseops-001",
+            tags=["cohort-8", "health-green", "high-ticket"],
+        ))
+
+        client._request_with_retry.assert_awaited_once_with(
+            "POST",
+            "/list/list-123/task",
+            {
+                "name": "Student: Demo",
+                "description": "Student operations",
+                "assignees": [456],
+                "tags": ["cohort-8", "health-green", "high-ticket"],
+            },
+            "7",
+            "demo-pulseops-001",
+        )
+
+    # Ensure cohort, health, and program-category tags are stable and threshold-aligned.
+    def test_student_tags_reflect_cohort_and_health(self):
+        self.assertEqual(
+            build_student_tags("Cohort 8", 42),
+            ["cohort-8", "health-red", "high-ticket"],
+        )
+        self.assertEqual(
+            build_student_tags("Cohort 9", 64),
+            ["cohort-9", "health-amber", "high-ticket"],
+        )
+        self.assertEqual(
+            build_student_tags("Cohort 1", 98),
+            ["cohort-1", "health-green", "high-ticket"],
+        )
+        self.assertEqual(
+            build_student_tags("  ", None),
+            ["cohort-unspecified", "health-unknown", "high-ticket"],
+        )
+
     # Ensure the standalone publisher can release its queue transport during shutdown.
     def test_outbox_service_closes_queue_client(self):
         class QueueServiceStub:

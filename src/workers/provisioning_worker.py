@@ -24,6 +24,7 @@ from src.core.db import SessionLocal
 from src.models.student import Student
 from src.domain.provisioning import parse_provisioning_message
 from src.services.clickup_client import ClickUpClient
+from src.domain.student_tags import build_student_tags
 from src.domain.lifecycle import InvalidStudentTransition, StudentDomainEvent, StudentStatus, transition_status
 from src.models.student_transition import StudentTransition
 from src.services.queue_service import QueueService
@@ -141,12 +142,17 @@ async def process_message(message, queue_client: QueueClient) -> None:
             
             # Build the intended external task representation for logging/future provider use.
             # - Assembles a provider-shaped task summary from the freshly loaded student.
-            payload = {
-                "name": f"Student: {student.name}",
-                "description": f"GHL Contact ID: {student.ghl_contact_id}\nProvisioned via PulseOps Worker",
-                "status": "TO DO",
-                "priority": 3,
-            }
+            description = (
+                "### Student Operations\n"
+                f"- **Program:** {student.program_type}\n"
+                f"- **Cohort:** {student.cohort}\n"
+                f"- **Assigned CSM:** {student.assigned_csm_id or 'Unassigned'}\n"
+                f"- **Health score:** "
+                f"{f'{student.health_score}/100' if student.health_score is not None else 'Not set'}\n"
+                f"- **Follow-ups:** {student.follow_up_count}\n"
+                f"- **GHL contact ID:** {student.ghl_contact_id}\n\n"
+                "Provisioned via PulseOps Worker"
+            )
             
             try:
                 # Use the hardened create_task method which handles retries, 429s, and timeouts
@@ -155,16 +161,18 @@ async def process_message(message, queue_client: QueueClient) -> None:
                 task_data = await clickup.create_task(
                     list_id=str(settings.CLICKUP_DEFAULT_LIST_ID),
                     task_name=f"Student: {student.name}",
-                    description=f"GHL Contact ID: {student.ghl_contact_id}\nProvisioned via PulseOps Worker",
-                    assignee_id=None,
+                    description=description,
+                    assignee_id=student.assigned_csm_id,
                     student_id=str(student.id),
-                    ghl_contact_id=str(student.ghl_contact_id)
+                    ghl_contact_id=str(student.ghl_contact_id),
+                    tags=build_student_tags(student.cohort, student.health_score),
                 )
                 
                 # - Stores ClickUp's task identifier so later synchronization can find the external record.
                 # - Architectural Purpose: The external ID is persisted before local completion is committed.
                 # - Plain-English: 'Remember the created ClickUp task on the student.'
                 student.clickup_task_id = task_data["id"]
+                student.clickup_list_id = str(settings.CLICKUP_DEFAULT_LIST_ID)
                 # Mark completion only after ClickUp confirms task creation.
                 # - Saves the pre-completion state for the immutable transition audit record.
                 previous_status = student.status

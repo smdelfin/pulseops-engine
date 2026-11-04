@@ -3,7 +3,7 @@ import asyncio
 import logging
 import time
 import httpx
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
 # Import validated credentials and integration settings from the shared configuration boundary.
 from ..core.config import settings
@@ -155,19 +155,30 @@ class ClickUpClient:
         list_id: str, 
         task_name: str, 
         description: str, 
-        assignee_id: str = None,
+        assignee_id: Optional[str] = None,
         student_id: str = "N/A",
-        ghl_contact_id: str = "N/A"
+        ghl_contact_id: str = "N/A",
+        tags: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Creates a task in a specific ClickUp list."""
-        # Select the provider endpoint for task creation.
-        endpoint = "/task"
-        # Translate application fields into ClickUp's JSON contract.
-        payload = {
+        # Select ClickUp's list-scoped task endpoint.
+        endpoint = f"/list/{list_id}/task"
+        # Build the provider's task body without repeating list scope in the JSON.
+        payload: Dict[str, Any] = {
             "name": task_name,
             "description": description,
-            "list_id": list_id,
-            "assignee": assignee_id
         }
+        # Include operational labels when callers provide segmentation tags.
+        if tags:
+            payload["tags"] = tags
+        # ClickUp accepts assignees as numeric user IDs in an array.
+        if assignee_id is not None:
+            try:
+                numeric_assignee_id = int(assignee_id)
+            except ValueError as exc:
+                raise ValueError("ClickUp assignee ID must be numeric") from exc
+            if numeric_assignee_id <= 0:
+                raise ValueError("ClickUp assignee ID must be positive")
+            payload["assignees"] = [numeric_assignee_id]
         # Use the common transport path so list and task creation behave consistently.
         return await self._request_with_retry("POST", endpoint, payload, student_id, ghl_contact_id)
